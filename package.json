@@ -1,0 +1,145 @@
+{
+  "name": "huawei-music-desktop",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "description": "华为音乐的第三方 Windows 客户端（非官方，未获授权 · 需自备账号与会员 · 不提供音源）",
+  "license": "AGPL-3.0-only",
+  "desktopName": "huawei-music-desktop.desktop",
+  "author": {
+    "name": "Huawei Music Desktop (unofficial)"
+  },
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "scripts": {
+    "dev": "npm run start",
+    "start": "npm run build && node scripts/start-desktop.mjs",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && electron-vite build",
+    "test": "node --test test/*.test.mjs",
+    "test:unit": "vitest run src/renderer",
+    "test:electron": "npm run build && node scripts/run-electron-tests.mjs smoke",
+    "test:electron-ui": "npm run build && node scripts/run-electron-tests.mjs ui",
+    "test:electron-business": "npm run build && node scripts/run-electron-tests.mjs business",
+    "test:electron-favorites": "npm run build && node scripts/run-electron-tests.mjs favorites",
+    "test:release-contents": "npm run build && node scripts/check-release-contents.mjs",
+    "test:safe-storage-restart": "npm run build && node scripts/run-electron-tests.mjs storage",
+    "test:login-navigation": "node scripts/run-electron-tests.mjs navigation",
+    "test:login-callback": "npm run build && node scripts/run-electron-tests.mjs callback",
+    "test:login-live": "npm run build && node scripts/run-electron-tests.mjs live",
+    "test:login-cancel": "npm run build && node scripts/run-electron-tests.mjs cancel",
+    "dist": "node scripts/build-desktop.mjs",
+    "dist:win": "node scripts/build-desktop.mjs win",
+    "dist:linux": "node scripts/build-desktop.mjs linux",
+    "dist:mac:x64": "node scripts/build-desktop.mjs mac x64",
+    "dist:mac:arm64": "node scripts/build-desktop.mjs mac arm64",
+    "test:packaged": "node scripts/run-electron-tests.mjs packaged",
+    "test:windows-installer": "node scripts/check-windows-installer.mjs",
+    "release:checksums": "node scripts/release-checksums.mjs",
+    "probe:login": "node scripts/probe-login.mjs",
+    "probe:music": "node scripts/probe-music.mjs",
+    "auth:lab": "node scripts/auth-lab.mjs",
+    "test:browser": "node scripts/test-callback-browser.mjs",
+    "capture:ui": "node scripts/capture-ui.mjs",
+    "test:pad-ui": "npm run build && node tools/test-pad-ui.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.0",
+    "@types/react": "19.2.0",
+    "@types/react-dom": "19.2.0",
+    "@vitejs/plugin-react": "5.1.1",
+    "electron": "44.7.2",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "playwright-core": "1.64.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "typescript": "7.0.2",
+    "vitest": "5.0.4"
+  },
+  "build": {
+    "appId": "org.hwmusicdesktop.unofficial",
+    "productName": "华为音乐（非官方）",
+    "asar": true,
+    "npmRebuild": false,
+    "publish": {
+      "provider": "github",
+      "owner": "wzz19931003",
+      "repo": "huawei-music-pad-unofficial",
+      "releaseType": "release"
+    },
+    "artifactName": "${name}-${version}-${os}-${arch}-unofficial.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "LICENSE",
+      "NOTICE",
+      "package.json",
+      "!**/.local/**",
+      "!**/research/**",
+      "!**/docs/**",
+      "!**/test/**",
+      "!**/scripts/**",
+      "!src/**",
+      "!**/AGENTS.md",
+      "!**/README.md",
+      "!**/tsconfig.json",
+      "!**/electron.vite.config.ts"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "forceCodeSigning": false,
+      "artifactName": "${name}-${version}-${os}-${arch}-setup-unofficial.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.music",
+      "identity": null
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "syncDesktopName": true,
+      "executableName": "huawei-music-desktop",
+      "category": "AudioVideo;Audio;Music",
+      "synopsis": "Unofficial third-party Huawei Music client for Windows",
+      "desktop": {
+        "entry": {
+          "Name": "华为音乐（非官方客户端）",
+          "Comment": "非官方第三方客户端，与华为无隶属或授权关系"
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "electron-updater": "6.8.11",
+    "undici": "7.30.0"
+  }
+}

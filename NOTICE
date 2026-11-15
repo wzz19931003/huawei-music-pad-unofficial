@@ -1,0 +1,74 @@
+华为音乐（非官方 Windows 客户端）
+Copyright (C) 2026 本项目作者
+
+本文件同时承担 AGPL-3.0 要求的「修改声明」与第三方归属说明。
+
+一、来源与本项目的修改（AGPL-3.0 §5(a)）
+
+本项目的协议层（src/*.mjs）、主进程与初始渲染结构，基于上游项目：
+
+  https://github.com/talongao/huawei-music-desktop
+  License: AGPL-3.0-only（见上游仓库的 LICENSE 与 NOTICE）
+  上游 NOTICE 记为「Copyright (C) 2026 本项目作者」
+
+原项目版权归其作者所有。本项目自 2026-10-24 起在其基础上修改，主要改动为：
+重写渲染层并按鸿蒙电脑版观感重做界面、播放条与播放页合成同一条、新增播放队列、
+新增 Windows 安装程序与托盘行为、替换应用图标。
+
+自 2026-10-24 起的所有修改由本项目作者完成，并以 AGPL-3.0-only 授权。
+本项目不是上游项目的官方分支，也不代表上游作者的立场或认可。
+
+二、许可
+
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU Affero General Public License as published by the Free Software Foundation, either version 3
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
+even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License along with this program.
+If not, see <https://www.gnu.org/licenses/>.
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+三、第三方归属
+
+- 应用与托盘图标：本项目原创（build/icon-src.svg），不含任何厂商官方标识，
+  声明见 build/icon.LICENSE.txt。
+- 界面线性图标：Lucide 图标集（ISC），运行时渲染，不打包其图形资源。
+- 运行时依赖（Electron、React、undici 等）按其各自许可证分发，见各依赖包内声明。
+- 除上述上游项目外，本项目不包含其他第三方客户端源码；接口形态来自公开网络资源与本人账号的兼容性实验，
+  相关记录见 docs/API_CONTRACT.md 与 docs/login-research.md。
+
+四、边界
+
+代码许可不代表获得华为服务、接口、商标或音乐内容的任何许可。详见 README 的免责声明。
+
+五、本地 Pad 界面派生修改（2026-11-15）
+
+本工作树直接基于 Daydreamcgy/huawei-music-win：
+  https://github.com/Daydreamcgy/huawei-music-win
+  基线提交：84a34f50fc5649af5ed425ac3694190a7b14da98
+
+2026-11-15 初轮修改涉及渲染层布局、Pad 导航与播放视图、定向测试和相关文档；保留以上原作者、
+上游来源、AGPL-3.0-only 声明，以及原有非官方身份和数据目录兼容标识。
+界面基于用户提供的 Pad 截图作本地适配，不是华为官方移植，也不声称功能完全等同。
+登录、会员、曲库服务与源接口不因界面修改而取得任何新授权或可用性保证。
+
+公开候选版本的 pad-cafe-atmosphere.webp 已替换为 scripts/generate-pad-cafe-art.py
+程序化生成的竹影装饰图；生成过程没有外部图片输入，不含用户截图、账号、专辑封面或商标。
+生成脚本与输出按本仓库许可一并提供。初轮仅本地参考的截图裁图不随公开版本分发。
+
+六、Pad 派生版本后续修改（2026-11-16）
+
+以上第一至第四节为直接上游保留的声明；其中“本项目作者”指相应上游版权作者，
+不是将原贡献改记为本派生维护者。保留原作者、历史 Lucide（ISC）归属与依赖许可。
+
+后续派生修改包括：主进程原生更新状态机与固定的自有 GitHub 发布源、窄更新 IPC，
+明确格式证据解析与有界媒体头探测、四种播放模式及兼容配置、独立音量控件，
+以及按参考观察手绘的页面内 SVG 图标、离线与在线探测工具和相关文档。
+Pad 运行界面已不再导入 Lucide；应用与托盘仍为独立非官方标识。
+这些修改按本仓库的 AGPL-3.0-only 声明分发；不新增任何华为服务或商标授权。
+更新源由 wzz19931003/huawei-music-pad-unofficial 独立维护，不来自华为或上游作者。

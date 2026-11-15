@@ -1,0 +1,14 @@
+/* Four-mode controls only; reuse the existing Pad design tokens. */
+.pad-mode-picker { z-index: 5; }
+.pad-mode-trigger { display: flex; align-items: center; gap: 8px; padding: 6px 10px; list-style: none; font-size: 13px; background: var(--pad-glass); border: 1px solid var(--pad-glass-line); }
+.pad-mode-trigger::-webkit-details-marker { display: none; }
+.pad-mode-trigger:focus-visible { outline: 2px solid var(--pad-focus); outline-offset: 4px; }
+.pad-mode-menu { position: absolute; top: calc(100% + 10px); right: 0; min-width: 190px; padding: 8px; border: 1px solid var(--pad-glass-line); border-radius: var(--pad-round); background: var(--surface-2); box-shadow: var(--pad-pill-shadow); }
+.pad-mode-menu > button { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px; border: 0; border-radius: 10px; background: none; color: var(--text); text-align: left; font-size: 14px; cursor: pointer; }
+.pad-mode-menu > button:hover { background: var(--surface); }
+.pad-mode-menu > button[aria-checked="true"] { color: var(--like); }
+.pad-mode-menu > button > span:last-child:not(:nth-child(2)) { margin-left: auto; }
+.pad-heart-status { position: absolute; z-index: 3; left: var(--pad-edge); top: 84px; max-width: min(360px, 42%); display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 12px; border: 1px solid var(--pad-glass-line); border-radius: 10px; background: var(--pad-glass); color: var(--text); font-size: 12px; line-height: 1.6; }
+.pad-heart-status > svg { flex: none; }
+.pad-heart-status > button { border: 1px solid var(--pad-glass-line); border-radius: 8px; color: var(--text); background: var(--surface-2); cursor: pointer; padding: 3px 8px; }
+.pad-heart-status.is-mini { position: fixed; z-index: 150; left: auto; top: auto; right: var(--pad-edge); bottom: calc(var(--pad-dock-bottom) + var(--pad-dock-height) + 12px); max-width: var(--pad-dock-width); }

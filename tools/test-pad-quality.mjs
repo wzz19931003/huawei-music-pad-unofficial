@@ -1,0 +1,80 @@
+// Offline DTO-to-UI regression; the audio is muted WAV, NOT an FLAC/MP3 service test.
+import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, rm, access, writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { _electron as launcher } from 'playwright-core';
+import electron from 'electron';
+import { installPadFixtures } from './pad-qa-fixtures.mjs';
+const packaged = Boolean(process.env.PAD_QA_EXECUTABLE);
+const exe = process.env.PAD_QA_EXECUTABLE || electron;
+assert.ok(packaged || process.env.PAD_QA_ALLOW_DEVELOPMENT === '1', 'Supply a packaged EXE or explicitly opt into a development probe');
+const scratch = process.env.HERMES_QA_SCRATCH || process.env.TMPDIR;
+assert.ok(scratch);
+const profile = await mkdtemp(join(scratch, 'hw-pad-quality-'));
+const output = resolve(packaged ? 'release/qa/pad-quality-packaged' : 'release/qa/pad-quality');
+const evidence = { scope: `${packaged ? 'packaged' : 'development Electron'} renderer/IPC/player DTO display using synthetic metadata and muted local WAV; not real audio-format decoding`, passed: [], huaweiLogin: 'not exercised', huaweiPlayback: 'not exercised' };
+let instance, child, failure;
+try {
+  await mkdir(output, { recursive: true });
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  instance = await launcher.launch({ executablePath: exe, args: [`--user-data-dir=${profile}`, ...(packaged ? [] : ['out/main/index.js'])], env, timeout: 30000 });
+  child = instance.process();
+  const page = await instance.firstWindow();
+  await page.locator('.pad-app').waitFor();
+  assert.equal(resolve(await instance.evaluate(({ app }) => app.getPath('userData'))), resolve(profile));
+  evidence.application = await instance.evaluate(({ app }) => ({ version: app.getVersion(), packaged: app.isPackaged }));
+  assert.equal(evidence.application.packaged, packaged);
+  const fixture = await installPadFixtures(instance, page);
+  await instance.evaluate(({ ipcMain }) => {
+    globalThis.__qualityCase = { data: { actualQuality: 'lossless', codec: 'flac', qualityEvidence: 'media-bytes', sampleRateHz: 48000, bitDepth: 24, channels: 2 }, delay: 0, requests: [] };
+    ipcMain.removeHandler('music:resolve-playback');
+    ipcMain.handle('music:resolve-playback', async (_event, input) => {
+      const data = { ...globalThis.__qualityCase.data };
+      globalThis.__qualityCase.requests.push(input.quality);
+      if (globalThis.__qualityCase.delay) await new Promise(done => setTimeout(done, globalThis.__qualityCase.delay));
+      return { ok: true, data: { url: globalThis.__padFixture.url, ...data } };
+    });
+  });
+  const navigation = page.getByRole('navigation', { name: '主导航' });
+  await navigation.getByRole('button', { name: '我的', exact: true }).click();
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('group', { name: '默认音质', exact: true }).getByRole('button', { name: '无损', exact: true }).click();
+  await navigation.getByRole('button', { name: '首页', exact: true }).click();
+  await page.locator('.main button').filter({ hasText: fixture.tracks[0].title }).first().click();
+  const badge = page.locator('.pad-player-badges > span').first();
+  await page.waitForFunction(() => document.querySelector('.pad-player-badges > span')?.textContent.includes('FLAC'));
+  assert.equal(await badge.textContent(), '无损音质 · FLAC');
+  assert.equal(await badge.getAttribute('data-quality-state'), 'confirmed');
+  for (const part of ['媒体数据帧', '48 kHz', '24 bit', '2 声道']) assert.ok((await badge.getAttribute('title')).includes(part));
+  evidence.passed.push('FLAC DTO evidence and parsed parameters pass through actual IPC/player to the badge and tooltip');
+  await instance.evaluate(() => { globalThis.__qualityCase.data = { actualQuality: 'standard', codec: 'mp3', qualityEvidence: 'media-header' }; });
+  await page.getByRole('button', { name: '下一首', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('.pad-player-badges > span')?.textContent === '标准音质 · MP3');
+  assert.match(await badge.getAttribute('title'), /媒体响应头/);
+  assert.equal((await instance.evaluate(() => globalThis.__qualityCase.requests)).at(-1), 'lossless');
+  evidence.passed.push('a selected lossless preference does not relabel a returned MP3 DTO as lossless');
+  await instance.evaluate(() => { globalThis.__qualityCase.data = { actualQuality: 'unknown', qualityEvidence: 'none' }; globalThis.__qualityCase.delay = 2000; });
+  await page.getByRole('button', { name: '下一首', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('.pad-player-badges > span')?.dataset.qualityState === 'pending', undefined, { timeout: 1500 });
+  assert.doesNotMatch(await badge.textContent(), /FLAC|MP3/);
+  await page.waitForFunction(() => document.querySelector('.pad-player-badges > span')?.textContent === '音源格式未识别');
+  assert.match(await badge.getAttribute('title'), /不按设置偏好/);
+  evidence.passed.push('track changes clear stale evidence; unknown results explain the missing evidence instead of claiming a requested format');
+  await instance.evaluate(() => { globalThis.__qualityCase.data = { actualQuality: 'unknown', qualityEvidence: 'conflict' }; globalThis.__qualityCase.delay = 0; });
+  await page.getByRole('button', { name: '下一首', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('.pad-player-badges > span')?.textContent === '格式信息冲突');
+  assert.equal(await badge.getAttribute('data-quality-state'), 'conflict');
+  assert.equal(await page.evaluate(() => window.__padAudio.length), 1);
+  evidence.passed.push('conflicting DTO evidence is visibly distinct and never becomes a confirmed lossless badge');
+  await page.screenshot({ path: join(output, 'quality-conflict.png') });
+} catch (error) { failure = error; evidence.failure = error.message; }
+finally {
+  await instance?.close().catch(() => undefined);
+  evidence.electronExited = !child || child.exitCode !== null || child.signalCode !== null;
+  await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  evidence.profileRemoved = await access(profile).then(() => false, () => true);
+  await writeFile(join(output, 'verification.json'), JSON.stringify(evidence, null, 2));
+}
+console.log(JSON.stringify(evidence, null, 2));
+assert.equal(evidence.electronExited, true); assert.equal(evidence.profileRemoved, true);
+if (failure) throw failure;
