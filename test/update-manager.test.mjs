@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 
 import * as implementation from '../src/main/update-manager.mjs';
+import { toUpdateView } from '../src/main/update-view.mjs';
 const source = { provider: 'github', owner: 'wzz19931003', repo: 'huawei-music-pad-unofficial', releaseType: 'release' };
 const info = (version = '1.1.0') => ({ version, files: [{ url: 'https://signed.private/download?token=secret-token' }],
   releaseNotes: 'C:\\private\\secret-token.txt', downloadedFile: 'C:\\private\\setup.exe' });
@@ -41,8 +42,8 @@ function setup(options = {}) {
 
 function assertSafe(state) {
   assert.deepEqual(Object.keys(state).sort(),
-    ['status', 'currentVersion', 'version', 'progress', 'message', 'errorCode'].sort());
-  assert.doesNotMatch(JSON.stringify(state), /secret-token|signed\.private|C:|setup\.exe|stack|releaseNotes|downloadedFile/);
+    ['status', 'currentVersion', 'version', 'progress', 'message', 'errorCode', 'releaseNotes', 'releaseNotesTruncated'].sort());
+  assert.doesNotMatch(JSON.stringify(state), /secret-token|signed\.private|C:|setup\.exe|stack|downloadedFile/);
   assert.ok(Object.isFrozen(state));
   assert.equal(typeof state.message, 'string');
   assert.ok(state.message.length > 0 && state.message.length < 200);
@@ -51,6 +52,158 @@ function assertSafe(state) {
     assert.ok(Number.isFinite(state.progress) && state.progress >= 0 && state.progress <= 100);
   }
 }
+
+test('real release text travels from the updater event to the version-bound renderer DTO', async () => {
+  const { updater, manager } = setup();
+  updater.checkImpl = () => {
+    updater.emit('update-available', { ...info(), releaseNotes: '修正播放队列顺序。' });
+    return Promise.resolve(null);
+  };
+  const state = await manager.check();
+  const expected = [{ version: '1.1.0', sections: [{ kind: 'text', items: ['修正播放队列顺序。'] }] }];
+  assert.deepEqual(state.releaseNotes, expected);
+  assert.deepEqual(toUpdateView(state).releaseNotes, expected);
+  assert.equal(toUpdateView(state).releaseNotesTruncated, false);
+  assert.equal(updater.calls.downloads, 0);
+  manager.dispose();
+});
+
+test('rechecks clear stale notes before I/O and failed or no-update checks cannot retain them', async () => {
+  const fixture = setup();
+  const { updater, manager } = fixture;
+  const offerNotes = async (version, releaseNotes) => {
+    updater.checkImpl = () => { updater.emit('update-available', { ...info(version), releaseNotes }); return Promise.resolve(null); };
+    return manager.check();
+  };
+  assert.equal((await offerNotes('1.1.0', '旧'.repeat(400))).releaseNotesTruncated, true);
+  const transport = deferred();
+  updater.checkImpl = () => transport.promise;
+  const pending = manager.check();
+  assert.deepEqual(manager.getState().releaseNotes, []);
+  assert.equal(manager.getState().releaseNotesTruncated, false);
+  await tick();
+  updater.emit('update-available', { ...info('1.2.0'), releaseNotes: null });
+  transport.resolve(null);
+  assert.deepEqual((await pending).releaseNotes, []);
+  await offerNotes('1.3.0', '候选版本说明');
+  updater.checkImpl = () => {
+    updater.emit('update-available', { ...info('1.4.0'), releaseNotes: '检查未完成的说明' });
+    return Promise.reject(new Error('check failed after event'));
+  };
+  const failed = await manager.check();
+  assert.equal(failed.errorCode, 'UPDATE_CHECK_FAILED');
+  assert.equal(failed.version, null);
+  assert.deepEqual(failed.releaseNotes, []);
+  await offerNotes('1.5.0', '不得留在最新版本状态的说明');
+  updater.checkImpl = () => { updater.emit('update-not-available', info('1.0.0')); return Promise.resolve(null); };
+  const idle = await manager.check();
+  assert.equal(idle.status, 'idle');
+  assert.deepEqual(idle.releaseNotes, []);
+  assert.equal(idle.releaseNotesTruncated, false);
+  manager.dispose();
+});
+
+test('manager binds changelog arrays to the actual installed and offered versions', async () => {
+  const { updater, manager } = setup();
+  updater.checkImpl = () => {
+    updater.emit('update-available', { ...info('1.2.0'), releaseNotes: [
+      { version: '1.0.0', note: '已安装内容' },
+      { version: '1.1.0', note: '修复：队列顺序' },
+      { version: '1.2.0', note: '新增：快捷搜索' },
+      { version: '2.0.0', note: '未来内容' },
+    ] });
+    return Promise.resolve(null);
+  };
+  const state = await manager.check();
+  assert.deepEqual(state.releaseNotes.map((entry) => entry.version), ['1.2.0', '1.1.0']);
+  assert.deepEqual(toUpdateView(state).releaseNotes, state.releaseNotes);
+  manager.dispose();
+});
+
+test('downloaded info can supply missing notes and retries retain them without authorizing a failed download', async () => {
+  const { updater, manager, states } = setup();
+  updater.checkImpl = () => { updater.emit('update-available', { ...info(), releaseNotes: null }); return Promise.resolve(null); };
+  assert.deepEqual((await manager.check()).releaseNotes, []);
+  updater.downloadImpl = () => {
+    updater.emit('update-downloaded', { ...info(), releaseNotes: '修复：断点续传' });
+    return Promise.reject(new Error('download rejected after event'));
+  };
+  const failed = await manager.download();
+  const expected = [{ version: '1.1.0', sections: [{ kind: 'fixed', items: ['断点续传'] }] }];
+  assert.deepEqual(failed.releaseNotes, expected);
+  assert.equal(failed.errorCode, 'UPDATE_DOWNLOAD_FAILED');
+  await assert.rejects(manager.install(), { code: 'UPDATE_NOT_READY' });
+  const transport = deferred();
+  updater.downloadImpl = () => transport.promise;
+  const pending = manager.download();
+  assert.deepEqual(manager.getState().releaseNotes, expected);
+  await tick();
+  updater.emit('download-progress', { percent: 42 });
+  assert.deepEqual(manager.getState().releaseNotes, expected);
+  updater.emit('update-downloaded', { version: '1.1.0' });
+  transport.resolve([]);
+  const downloaded = await pending;
+  assert.equal(downloaded.status, 'downloaded');
+  assert.deepEqual(toUpdateView(downloaded).releaseNotes, expected);
+  await assert.rejects(manager.check(), { code: 'UPDATE_NOT_READY' });
+  assert.equal(manager.getState(), downloaded);
+  updater.installImpl = () => { throw new Error('native install failure'); };
+  const installFailed = await manager.install();
+  assert.equal(installFailed.errorCode, 'UPDATE_INSTALL_FAILED');
+  assert.deepEqual(installFailed.releaseNotes, expected);
+  updater.installImpl = () => undefined;
+  assert.deepEqual((await manager.install()).releaseNotes, expected);
+  assert.deepEqual(updater.calls.installs, [[false, true], [false, true]]);
+  states.forEach(assertSafe);
+  manager.dispose();
+});
+
+test('offered notes and truncation survive incomplete-download retry and verified install recovery', async () => {
+  const { updater, manager } = setup();
+  updater.checkImpl = () => {
+    updater.emit('update-available', { ...info(), releaseNotes: `## 新增\n- ${'真实内容'.repeat(100)}` });
+    return Promise.resolve(null);
+  };
+  const offered = await manager.check();
+  assert.equal(offered.releaseNotesTruncated, true);
+  const incomplete = await manager.download();
+  assert.equal(incomplete.errorCode, 'UPDATE_DOWNLOAD_UNVERIFIED');
+  assert.equal(incomplete.releaseNotes, offered.releaseNotes);
+  assert.equal(incomplete.releaseNotesTruncated, true);
+  updater.downloadImpl = () => {
+    updater.emit('update-downloaded', { ...info(), releaseNotes: null });
+    return Promise.resolve([]);
+  };
+  const downloaded = await manager.download();
+  assert.equal(downloaded.status, 'downloaded');
+  assert.equal(downloaded.releaseNotes, offered.releaseNotes);
+  assert.equal(toUpdateView(downloaded).releaseNotesTruncated, true);
+  updater.installImpl = () => { throw new Error('retry is still explicit'); };
+  assert.equal((await manager.install()).releaseNotes, offered.releaseNotes);
+  await assert.rejects(manager.check(), { code: 'UPDATE_NOT_READY' });
+  updater.installImpl = () => undefined;
+  assert.equal((await manager.install()).releaseNotes, offered.releaseNotes);
+  manager.dispose();
+});
+
+test('invalid or missing release notes do not block a genuine update or invent content', async () => {
+  for (const releaseNotes of [undefined, null, { html: '<b>untrusted</b>' }, '超量'.repeat(40_000)]) {
+    const { updater, manager } = setup();
+    updater.checkImpl = () => { updater.emit('update-available', { ...info(), releaseNotes }); return Promise.resolve(null); };
+    const available = await manager.check();
+    assert.equal(available.status, 'available');
+    assert.deepEqual(available.releaseNotes, []);
+    updater.downloadImpl = () => {
+      updater.emit('update-downloaded', { ...info(), releaseNotes });
+      return Promise.resolve([]);
+    };
+    const downloaded = await manager.download();
+    assert.equal(downloaded.status, 'downloaded');
+    assert.deepEqual(downloaded.releaseNotes, []);
+    assert.equal(updater.calls.installs.length, 0);
+    manager.dispose();
+  }
+});
 
 test('initial states are distinct, immutable and never start an automatic check or download', () => {
   for (const [options, status] of [[{}, 'idle'], [{ source: null }, 'unconfigured'], [{ packaged: false }, 'development'],

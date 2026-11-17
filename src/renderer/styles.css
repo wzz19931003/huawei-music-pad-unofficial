@@ -25,6 +25,15 @@
   --sidebar: 232px;
   --titlebar: 52px;
   --playerbar: 76px;
+  --brand-title-size: 12px;
+  --brand-logo-size: 20px;
+  --brand-title-gap: 8px;
+  --desktop-sidebar: 200px;
+  --desktop-playerbar: 108px;
+  --desktop-head: 76px;
+  --desktop-control-hit: 44px;
+  --desktop-gap: 16px;
+  --desktop-page-edge: clamp(22px, 2.4vw, 42px);
   /* 内容列：所有页面共用一条左右基线，宽屏居中收口 */
   --content-max: 1400px;
   /* 卡片列间距，卡片网格和「最近播放」横排共用，保证两边逐像素一致 */

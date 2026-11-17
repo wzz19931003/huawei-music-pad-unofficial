@@ -1,10 +1,10 @@
 {
   "name": "huawei-music-desktop",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "main": "out/main/index.js",
-  "description": "华为音乐的第三方 Windows 客户端（非官方，未获授权 · 需自备账号与会员 · 不提供音源）",
+  "description": "Wmusic：兼容华为音乐的第三方 Windows 客户端（非官方，未获授权 · 需自备账号与会员 · 不提供音源）",
   "license": "AGPL-3.0-only",
   "desktopName": "huawei-music-desktop.desktop",
   "author": {
@@ -17,9 +17,12 @@
     "dev": "npm run start",
     "start": "npm run build && node scripts/start-desktop.mjs",
     "typecheck": "tsc --noEmit",
-    "build": "npm run typecheck && electron-vite build",
+    "build": "npm run typecheck && electron-vite build && node scripts/build-lyrics-preload.mjs",
     "test": "node --test test/*.test.mjs",
     "test:unit": "vitest run src/renderer",
+    "test:undici-security": "node --test test/undici-security-regressions.test.mjs test/network-security-report-gates.test.mjs",
+    "test:network-security": "node tools/test-wmusic-network-security.mjs",
+    "test:desktop-lyrics": "node --test test/desktop-lyrics-*.test.mjs && vitest run src/main/desktop-lyrics.test.ts src/preload/desktop-lyrics.test.ts src/preload/desktop-lyrics-wiring.test.ts src/renderer/DesktopLyrics.test.tsx src/renderer/DesktopLyricsToggle.test.tsx src/renderer/desktop-lyrics-control.test.ts src/renderer/desktop-lyrics-publisher.test.ts src/renderer/lib/player.modes.test.ts",
     "test:electron": "npm run build && node scripts/run-electron-tests.mjs smoke",
     "test:electron-ui": "npm run build && node scripts/run-electron-tests.mjs ui",
     "test:electron-business": "npm run build && node scripts/run-electron-tests.mjs business",
@@ -50,18 +53,21 @@
     "@types/react": "19.2.0",
     "@types/react-dom": "19.2.0",
     "@vitejs/plugin-react": "5.1.1",
-    "electron": "44.7.2",
+    "electron": "45.3.3",
     "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",
+    "pe-library": "0.4.1",
     "playwright-core": "1.64.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "resedit": "1.7.2",
     "typescript": "7.0.2",
+    "vite": "7.3.7",
     "vitest": "5.0.4"
   },
   "build": {
     "appId": "org.hwmusicdesktop.unofficial",
-    "productName": "华为音乐（非官方）",
+    "productName": "Wmusic（非官方）",
     "asar": true,
     "npmRebuild": false,
     "publish": {
@@ -101,7 +107,7 @@
         }
       ],
       "forceCodeSigning": false,
-      "artifactName": "${name}-${version}-${os}-${arch}-setup-unofficial.${ext}"
+      "artifactName": "Wmusic-${version}-${os}-${arch}-setup-unofficial.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -129,17 +135,25 @@
       "syncDesktopName": true,
       "executableName": "huawei-music-desktop",
       "category": "AudioVideo;Audio;Music",
-      "synopsis": "Unofficial third-party Huawei Music client for Windows",
+      "synopsis": "Wmusic: unofficial third-party Huawei Music client",
       "desktop": {
         "entry": {
-          "Name": "华为音乐（非官方客户端）",
+          "Name": "Wmusic（非官方）",
           "Comment": "非官方第三方客户端，与华为无隶属或授权关系"
         }
       }
     }
   },
   "dependencies": {
-    "electron-updater": "6.8.11",
-    "undici": "7.30.0"
+    "electron-updater": "6.8.12",
+    "undici": "7.30.2"
+  },
+  "overrides": {
+    "node-gyp": {
+      "undici": "6.29.1"
+    },
+    "ajv": {
+      "fast-uri": "3.1.9"
+    }
   }
 }

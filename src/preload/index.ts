@@ -1,8 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { channels } from '../shared/channels';
 import type { DesktopApi, UpdateState } from '../shared/types';
+import { createDesktopLyricsPublisher } from './desktop-lyrics';
 
 const api: DesktopApi = {
+  desktopLyrics: createDesktopLyricsPublisher(),
   updates: {
     state: () => ipcRenderer.invoke(channels.updatesGet),
     check: () => ipcRenderer.invoke(channels.updatesCheck),
@@ -28,6 +30,8 @@ const api: DesktopApi = {
   music: {
     favorites: input => ipcRenderer.invoke(channels.musicFavorites, input),
     favoritesSummary: () => ipcRenderer.invoke(channels.musicFavoritesSummary),
+    charts: input => ipcRenderer.invoke(channels.musicCharts, input),
+    chartDetail: input => ipcRenderer.invoke(channels.musicChartDetail, input),
     playlists: input => ipcRenderer.invoke(channels.musicPlaylists, input),
     playlistDetail: input => ipcRenderer.invoke(channels.musicPlaylistDetail, input),
     search: input => ipcRenderer.invoke(channels.musicSearch, input),

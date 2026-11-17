@@ -93,6 +93,9 @@ export const api = {
   settings: () => unwrap(window.desktop.settings.get()),
   updateSettings: (patch: Partial<AppSettings>) => unwrap(window.desktop.settings.update(patch)),
 
+  charts: (refresh = false) => unwrap(window.desktop.music.charts({ refresh })),
+  chartDetail: (input: import('../../shared/types').PublicChartDetailInput) => unwrap(window.desktop.music.chartDetail(input)),
+
   playlists: async (refresh = false): Promise<Playlist[]> => {
     const data = await unwrap(window.desktop.music.playlists({ refresh }));
     return data.playlists;

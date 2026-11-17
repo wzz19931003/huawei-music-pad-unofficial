@@ -1,0 +1,67 @@
+{
+  "source": "Two real QR images supplied by the user in this conversation",
+  "distributionPermission": {
+    "installer": true,
+    "publicSource": true
+  },
+  "permissionSource": "Explicit user confirmation followed by the two supplied images",
+  "decoder": {
+    "name": "zxing-cpp",
+    "version": "3.1.1"
+  },
+  "verifiedAtUtc": "2026-11-16T16:41:56.678812+00:00",
+  "operation": "Lossless crop with quiet margin, RGB PNG encoding and metadata removal; no QR regeneration",
+  "paymentAttempted": false,
+  "paymentAddressOpened": false,
+  "recipientIdentityVerified": false,
+  "codes": {
+    "wechat": {
+      "sourceSha256": "7596261c9a8f26c2b6cbec854ed8d1dba0ecb2917d48504f2a0777b9a61d5aa1",
+      "sourceSize": [
+        1138,
+        1347
+      ],
+      "crop": [
+        316,
+        358,
+        822,
+        864
+      ],
+      "asset": "src/renderer/assets/donation-wechat.png",
+      "assetSha256": "1a0f565332b6851f54aea484645cbd7b06f1c590f301ad0b74bae34a20dde030",
+      "assetSize": [
+        506,
+        506
+      ],
+      "payloadSha256": "f4102bd4d516781a99d9619f6b27d59a5efe250281edee76aa63ed1dae93adcd",
+      "providerFormatConfirmed": true,
+      "payloadUnchanged": true,
+      "display300pxDecoded": true,
+      "metadataStripped": true
+    },
+    "alipay": {
+      "sourceSha256": "84bab79d617e7b3a2ae65d72a185d13b5372766561675f984019056a3eacb366",
+      "sourceSize": [
+        825,
+        1237
+      ],
+      "crop": [
+        198,
+        459,
+        628,
+        889
+      ],
+      "asset": "src/renderer/assets/donation-alipay.png",
+      "assetSha256": "9c588a0553e022efa0c260d3df83862e61808cf6a41edbeb3bb966d7e729fafa",
+      "assetSize": [
+        430,
+        430
+      ],
+      "payloadSha256": "9b4deec8098f02c4861108f63e788935d5d5ccb24729e4048739e06ec004b428",
+      "providerFormatConfirmed": true,
+      "payloadUnchanged": true,
+      "display300pxDecoded": true,
+      "metadataStripped": true
+    }
+  }
+}

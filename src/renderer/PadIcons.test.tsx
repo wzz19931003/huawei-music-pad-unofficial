@@ -9,24 +9,25 @@ async function icons() {
   return import(/* @vite-ignore */ iconPath).catch(() => ({})) as Promise<Record<string, any>>;
 }
 
-describe('screenshot-locked Pad icons', () => {
-  it('renders the screenshot home as a solid house with a transparent rounded arch', async () => {
+describe('compatible screenshot-informed application icons', () => {
+  it('renders the brief-directed Home outline without claiming the unseen state is observed', async () => {
     const library = await icons();
     expect(library.Home, 'the custom Home SVG component must exist').toBeDefined();
     const svg = renderToStaticMarkup(<library.Home />);
-    expect(svg).toContain('viewBox="0 0 24 24"');
+    expect(svg).toContain('viewBox="0 0 32 32"');
     expect(svg).toContain('aria-hidden="true"');
     expect(svg).toContain('data-pad-icon="Home"');
-    expect(svg).toContain('fill-rule="evenodd"');
-    expect(svg).toContain('data-part="rounded-arch-house"');
+    expect(svg).toContain('data-icon-source="original"');
+    expect(svg).toContain('data-part="outline-house-and-arch"');
+    expect(svg).toContain('data-part="detached-roof"');
     expect(svg).not.toMatch(/<image|<use|lucide/);
   });
 
   it.each([
-    ['Landmark', 'sloped-facade', 'M1.6 10.1 18.1 4.9 22.4 10V22H1.6Z'],
-    ['Music2', 'organic-note-disc', 'M19.8 2.3C23.1 5.2 23.8 15.8 21.1 20.1'],
-    ['RadioTower', 'broadcast-rings', 'M8 20.5a9.4 9.4 0 1 1 8 0'],
-    ['CircleUserRound', 'user-disc', 'M12 1a11 11 0 1 0 0 22'],
+    ['Landmark', 'sloped-facade', 'M2.7 12.9 23.1 6.35 29.3 13.15V27.2H2.7Z'],
+    ['Music2', 'organic-note-disc', 'M22.6 2.55C28.4 2.9 30.65 12.15 29.15 22.2'],
+    ['RadioTower', 'open-broadcast-rings', 'M9.3 26.35a13.05 13.05 0 1 1 13.4 0'],
+    ['CircleUserRound', 'user-disc', 'M16 2.25a13.75 13.75 0 1 0 0 27.5'],
   ])('redraws the navigation %s rather than a generic outline', async (name, part, path) => {
     const library = await icons();
     expect(library[name], `${name} must be exported`).toBeDefined();
@@ -38,24 +39,24 @@ describe('screenshot-locked Pad icons', () => {
   });
 
   it.each([
-    ['Play', 'rounded-play', 'M7 4.9Q5.9 4.3 5.9 5.65V18.35'],
-    ['Pause', 'pause-bars', 'M8.4 5.5v13M15.6 5.5v13'],
-    ['SkipForward', 'next-track', 'M4.35 5.3Q3.25 4.65 3.25 6V18'],
-    ['ListMusic', 'queue-note', 'M2.2 5.2h9.4M2.2 12h8M2.2 18.8h4.7'],
-    ['Heart', 'heart', 'M12 5.6C9.1 1.4 2.1 2.6 2.1 8.35'],
+    ['Play', 'rounded-play', 'M10.1 6.8q-1.55-.9-1.55.95v16.5'],
+    ['Pause', 'pause-bars', 'M11.1 7.3v17.4M20.9 7.3v17.4'],
+    ['SkipForward', 'next-triangle', 'M6.0 7.55q-1.4-.8-1.4.9v15.1'],
+    ['ListMusic', 'queue-note', 'M3.4 6.7h12.4M3.4 15.4h10.9M3.4 24.1h6.5'],
+    ['Heart', 'favorite-heart', 'M16 8.15C12.5 2.2 3 3.1 3 10.9'],
     ['HeartOff', 'dislike-slash', 'M2.35 2.35 21.65 21.65'],
-    ['MoreVertical', 'circled-more', 'r="10"'],
+    ['MoreVertical', 'more-ring', 'r="12.2"'],
     ['Repeat', 'circular-mode', 'M10.2 2.1a10 10 0 1 0 11.7 10.1'],
-    ['Menu', 'menu-lines', 'M2 5.1h20M2 12h20M2 18.9h20'],
+    ['Menu', 'menu-lines', 'M3.2 7.2h25.6M3.2 16h25.6M3.2 24.8h25.6'],
     ['Settings', 'soft-six-tooth-cog', 'M10.25 1.9h3.5'],
-    ['Search', 'search-ring', 'r="7.6"'],
+    ['Search', 'search-ring', 'r="9.4"'],
   ])('locks the observed %s control silhouette', async (name, part, signature) => {
     const library = await icons();
     expect(library[name], `${name} must be exported`).toBeDefined();
     const svg = renderToStaticMarkup(React.createElement(library[name]));
     expect(svg).toContain(`data-part="${part}"`);
     expect(svg).toContain(signature);
-    expect(svg).toContain('data-icon-source="screenshot"');
+    expect(svg).toContain(`data-icon-source="${name === 'Pause' ? 'original' : 'screenshot'}"`);
     if (name === 'MoreVertical') expect(svg.match(/<circle/g)).toHaveLength(3); // ring + TWO dots
   });
 
@@ -79,9 +80,12 @@ describe('screenshot-locked Pad icons', () => {
 
   it('labels unseen controls as originals instead of claiming screenshot evidence', async () => {
     const library = await icons();
-    for (const name of ['HeartPulse', 'CheckCircle', 'Download', 'VolumeX', 'SkipBack', 'Repeat1', 'Shuffle', 'Trash2', 'ShieldCheck']) {
+    for (const name of ['HeartPulse', 'CheckCircle', 'Download', 'VolumeX', 'Pause', 'Repeat1', 'Trash2', 'ShieldCheck']) {
       expect(library[name], name).toBeDefined();
       expect(renderToStaticMarkup(React.createElement(library[name])), name).toContain('data-icon-source="original"');
+    }
+    for (const name of ['SkipBack', 'Shuffle', 'Menu', 'MoreVertical']) {
+      expect(renderToStaticMarkup(React.createElement(library[name])), name).toContain('data-icon-reference-kind="current-software-screenshot"');
     }
     for (const name of ['Mail', 'Piano', 'Guitar', 'CassetteTape', 'Disc3', 'Folder', 'History', 'Mic2', 'Star', 'Ticket', 'HelpCircle', 'Trophy', 'Shapes', 'Sparkles', 'Waves', 'UsersRound', 'ListChecks']) {
       expect(library[name], name).toBeDefined();
@@ -148,8 +152,11 @@ describe('screenshot-locked Pad icons', () => {
     const saved = renderToStaticMarkup(<library.Heart fill="currentColor" />);
     expect(outline).toContain('fill="none"');
     expect(saved).toContain('fill="currentColor"');
-    expect(outline.match(/d="M12 5.6[^\"]+/)?.[0]).toBe(saved.match(/d="M12 5.6[^\"]+/)?.[0]);
-    const solid = renderToStaticMarkup(<library.Home fill="#e60045" />);
+    const path = /\sd="([^"]+)"/;
+    expect(outline.match(path)?.[1]).toBeTruthy();
+    expect(outline.match(path)?.[1]).toBe(saved.match(path)?.[1]);
+    expect(saved).toMatch(/data-part="favorite-heart"[^>]*stroke="none"/);
+    const solid = renderToStaticMarkup(<library.Landmark fill="#e60045" />);
     expect(solid).toContain('fill="#e60045"');
     expect(solid).toContain('--pad-icon-fill:#e60045');
     expect(solid).toContain('fill="var(--pad-icon-fill, currentColor)"');
@@ -186,7 +193,7 @@ describe('screenshot-locked Pad icons', () => {
     expect(favorite).toContain('data-part="tile-top-rail"');
     expect(renderToStaticMarkup(<library.Heart />)).not.toContain('favorite-tile');
     const sleeve = renderToStaticMarkup(<library.ListMusic variant="sleeve" />);
-    expect(sleeve).toContain('data-part="playlist-sleeve"');
+    expect(sleeve).toContain('data-part="playlist-book"');
     expect(sleeve).not.toContain('queue-note');
     expect(renderToStaticMarkup(<library.ListMusic />)).toContain('queue-note');
   });

@@ -8,6 +8,179 @@ const track = (id, changes = {}) => ({
 });
 const ids = tracks => tracks.map(item => item.id);
 
+test('heart discovers other artists and albums through a favorite-title catalog search', async () => {
+  const favorites = Array.from({ length: 4 }, (_, i) => track(`seed-${i}`, {
+    artists: [{ id: `saved-artist-${i}`, name: `Saved artist ${i}` }],
+    album: { id: `saved-album-${i}`, title: `Saved album ${i}` },
+  }));
+  // Synthetic API boundary data; the actual collector and request planner run.
+  // No live account, invented recommender, or external music source is involved.
+  const discovery = track('catalog-discovery', {
+    title: favorites[0].title, artists: [{ id: 'other-artist', name: 'Other artist' }],
+    album: { id: 'other-album', title: 'Other album' },
+  });
+  const calls = [];
+  const result = await modes.buildHeartQueue({ favorites,
+    loadArtist: async id => { calls.push(['artist', id]); return { tracks: [] }; },
+    search: async query => {
+      calls.push(['search', query]);
+      return { tracks: query === favorites[0].title ? [discovery] : [] };
+    },
+  });
+  assert.deepEqual(result.recommendations, [discovery], 'the existing catalog search must reach beyond saved artists and albums');
+  assert.equal(result.status, 'ready');
+  assert.deepEqual(ids(result.queue), [favorites[0].id, discovery.id]);
+  assert.ok(calls.some(([kind, value]) => kind === 'search' && value === favorites[0].title));
+  assert.ok(result.requests <= modes.HEART_LIMITS.maxRequests);
+});
+
+test('heart reserves candidate space for a modest discovery mix even after familiar results fill it', async () => {
+  const favorites = Array.from({ length: 6 }, (_, i) => track(`saved-${i}`));
+  const familiar = Array.from({ length: 6 }, (_, i) => track(`related-${i}`));
+  const discoveries = Array.from({ length: 6 }, (_, i) => track(`explore-${i}`, {
+    artists: [{ id: `other-${i}`, name: `Other ${i}` }],
+    album: { id: `other-album-${i}`, title: `Other album ${i}` },
+  }));
+  const queries = [];
+  const result = await modes.buildHeartQueue({ favorites,
+    loadArtist: async () => ({ tracks: familiar }),
+    search: async query => { queries.push(query); return { tracks: [...familiar, ...discoveries] }; },
+  });
+  assert.deepEqual(ids(result.recommendations), ['related-0', 'related-1', 'explore-0', 'related-2', 'related-3', 'explore-1'],
+    'bounded client default mixes discoveries without displacing every usable related track');
+  assert.ok(queries.includes(favorites[0].title), 'a full related pool must not suppress the title search');
+  assert.equal(result.queue.length, 12);
+  assert.equal(new Set(ids(result.queue)).size, 12);
+});
+
+test('heart reserves two distinct title-search chances inside the existing eight-request ceiling', async () => {
+  const favorites = Array.from({ length: 4 }, (_, i) => track(`f${i}`, {
+    artists: [{ id: `a${i}`, name: `Artist ${i}` }], album: { id: `al${i}`, title: `Album ${i}` },
+  }));
+  const familiar = favorites.map((row, i) => track(`familiar-${i}`, { artists: row.artists }));
+  const discovery = track('second-title-discovery', { artists: [{ id: 'outside', name: 'Outside artist' }] });
+  const calls = [];
+  const result = await modes.buildHeartQueue({ favorites,
+    loadArtist: async id => { calls.push(['artist', id]); return { tracks: familiar }; },
+    search: async query => {
+      calls.push(['search', query]);
+      return { tracks: query === favorites[1].title ? [discovery] : familiar };
+    },
+  });
+  assert.ok(result.recommendations.includes(discovery), 'the first title returning only familiar tracks must not starve a second bounded chance');
+  assert.deepEqual(calls, [['artist', 'a0'], ['search', favorites[0].title], ['search', favorites[1].title]]);
+  assert.equal(result.requests, 3);
+  assert.equal(result.recommendations.length, 4);
+});
+
+test('heart aborts during a reserved exploration read after a full familiar pool and ignores late novel data', { timeout: 1000 }, async () => {
+  const controller = new AbortController();
+  const favorites = Array.from({ length: 3 }, (_, i) => track(`saved-${i}`));
+  let release;
+  const queries = [];
+  const collecting = modes.buildHeartQueue({ favorites, signal: controller.signal,
+    loadArtist: async () => ({ tracks: [track('related-0'), track('related-1'), track('related-2')] }),
+    search: query => { queries.push(query); return new Promise(resolve => { release = resolve; }); },
+  });
+  for (let turn = 0; turn < 12 && !release; turn += 1) await Promise.resolve();
+  assert.equal(typeof release, 'function', 'the bounded exploration read must actually start');
+  controller.abort('cancel exploration');
+  const result = await collecting;
+  assert.deepEqual(result, { status: 'aborted', queue: [], recommendations: [], requests: 2, failures: 0 });
+  release({ tracks: [track('late-outside', { artists: [{ id: 'outside', name: 'Outside' }] })] });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(result.recommendations, []);
+  assert.deepEqual(queries, [favorites[0].title]);
+  assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+});
+
+test('heart keeps real related pairs when bounded exploration is empty, malformed, or fails', async () => {
+  const favorites = ['saved-0', 'saved-1', 'saved-2'].map(id => track(id));
+  const related = ['related-0', 'related-1', 'related-2'].map(id => track(id));
+  for (const [reply, failures] of [
+    [() => ({ tracks: [] }), 0],
+    [() => ({ tracks: favorites }), 0],
+    [() => ({ tracks: {} }), 2],
+    [() => ({ ok: false, tracks: [track('not-accepted')] }), 2],
+    [() => { throw new Error('synthetic search unavailable'); }, 2],
+  ]) {
+    const result = await modes.buildHeartQueue({ favorites, loadArtist: async () => ({ tracks: related }), search: reply });
+    assert.equal(result.status, 'ready', 'no novel result must not discard otherwise usable normal related pairs');
+    assert.deepEqual(result.recommendations, related);
+    assert.deepEqual(ids(result.queue), ['saved-0', 'related-0', 'saved-1', 'related-1', 'saved-2', 'related-2']);
+    assert.equal(result.requests, 3);
+    assert.equal(result.failures, failures);
+  }
+});
+
+test('heart keeps bounded title opportunities under lowered budgets and deduplicates overlapping metadata queries', async () => {
+  const favorites = Array.from({ length: 30 }, (_, i) => track(`f${i}`, { artists: [{ id: `a${i}`, name: `Artist ${i}` }] }));
+  for (const [maxRequests, limit] of [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4], [5, 5], [8, 8], [999, 8]]) {
+    const queries = [];
+    const result = await modes.buildHeartQueue({ favorites, maxRequests,
+      loadArtist: async () => ({ tracks: [] }),
+      search: async query => { queries.push(query); return { tracks: [] }; },
+    });
+    assert.equal(result.requests, limit);
+    assert.equal(queries.filter(query => favorites.slice(0, 24).some(row => row.title === query)).length,
+      Math.min(2, Math.ceil(limit / 4)), 'reduced budgets still reserve actual favorite-title requests');
+  }
+  const shared = track('shared-0', { title: ' Shared   query ', artists: [{ id: 'shared-artist', name: 'SHARED query' }], album: { id: 'shared-album', title: 'Shared query' } });
+  const calls = [];
+  const result = await modes.buildHeartQueue({ favorites: [shared, { ...shared, id: 'shared-1', title: 'shared query' }],
+    loadArtist: async id => { calls.push(['artist', id]); return { tracks: [] }; },
+    search: async query => { calls.push(['search', query]); return { tracks: [] }; },
+  });
+  assert.equal(result.requests, 2);
+  assert.deepEqual(calls, [['artist', 'shared-artist'], ['search', shared.title]], 'one normalized search identity, original metadata value preserved');
+});
+
+test('heart applies strict availability, shape, full favorite-ID exclusion, deduplication, and response caps to exploration too', async () => {
+  const favorites = Array.from({ length: 30 }, (_, i) => track(`saved-${i}`));
+  favorites[29] = { ...favorites[29], available: false };
+  const familiar = Array.from({ length: 24 }, (_, i) => track(`related-${i}`));
+  const outside = track('outside', { artists: [{ id: 'outside-artist', name: 'Outside artist' }] });
+  const beyond = { ...outside, id: 'beyond-response-cap' };
+  const raw = Array.from({ length: 101 }, () => favorites[29]);
+  raw.splice(0, 7, null, { ...outside, id: 'truthy', available: 'true' }, { ...outside, id: 'missing-available', available: undefined },
+    { ...outside, id: 'bad-artist', artists: [null] }, { ...outside, id: 'bad-album', album: { id: '', title: 'Bad' } },
+    { ...outside, id: 'no-evidence', artists: [] }, outside);
+  raw[99] = outside;
+  raw[100] = beyond;
+  let scanned = 0;
+  const tracks = new Proxy(raw, { get(target, key, receiver) {
+    if (typeof key === 'string' && /^\d+$/u.test(key)) scanned += 1;
+    return Reflect.get(target, key, receiver);
+  } });
+  const result = await modes.buildHeartQueue({ favorites,
+    loadArtist: async () => ({ tracks: familiar }), search: async () => ({ tracks }),
+  });
+  assert.equal(result.status, 'ready');
+  assert.equal(result.discoveryCount, 1);
+  assert.equal(result.recommendations.length, 24);
+  assert.equal(result.recommendations.filter(row => row === outside).length, 1);
+  assert.equal(scanned, 200, 'only the first 100 rows of each of two reserved title reads are inspected');
+  assert.equal(result.requests, 3);
+  assert.equal(new Set(ids(result.queue)).size, 48);
+  assert.ok(result.recommendations.every(row => row.id === outside.id || row.id.startsWith('related-')));
+  assert.ok(!ids(result.recommendations).includes(beyond.id));
+});
+
+test('heart requires comparable observed metadata but can explore a different album without artist fields', async () => {
+  const albumSeed = track('album-seed', { artists: [], album: { id: 'saved-album', title: 'Saved album' } });
+  const outsideAlbum = track('outside-album-track', { artists: [], album: { id: 'other-album', title: 'Other album' } });
+  const result = await modes.buildHeartQueue({ favorites: [albumSeed],
+    search: async query => ({ tracks: query === albumSeed.title ? [outsideAlbum] : [] }),
+  });
+  assert.deepEqual(result.recommendations, [outsideAlbum]);
+  assert.equal(result.discoveryCount, 1);
+  const unknown = await modes.buildHeartQueue({ favorites: [track('metadata-free', { artists: [] })],
+    search: async () => ({ tracks: [outsideAlbum] }),
+  });
+  assert.equal(unknown.status, 'no-candidates', 'missing seed identity cannot prove an artist or album is different');
+  assert.deepEqual(unknown.recommendations, []);
+});
+
 test('heart explicitly refuses absent or unplayable favorites without making requests', async () => {
   const never = () => { assert.fail('no favorites must not issue a request'); };
   for (const favorites of [undefined, [], {}, [null, track('x', { available: false }), track('', {}), track('y', { title: '' })]]) {
@@ -69,32 +242,32 @@ test('heart uses real unary search results when artist loading finds no candidat
   });
   assert.equal(result.status, 'ready');
   assert.deepEqual(ids(result.queue), ['f1', 'new1', 'f2', 'new2']);
-  assert.equal(result.requests, 2);
-  assert.deepEqual(calls, [['artist', 'artist-a'], ['search', '歌手 A']]);
+  assert.equal(result.requests, 3);
+  assert.deepEqual(calls, [['artist', 'artist-a'], ['search', 'Song f1'], ['search', 'Song f2']]);
 });
 
 test('heart never disguises empty, malformed, failed, or missing API data as recommendations', async () => {
   for (const [reply, failures] of [
     [() => ({ tracks: [] }), 0],
-    [() => ({ tracks: [track('favorite'), track('other', { artists: [{ name: 'Unrelated' }] })] }), 0],
-    [() => null, 2], [() => ({ tracks: {} }), 2], [() => [track('new')], 2],
-    [() => ({ ok: false, error: { kind: 'network' }, tracks: [track('stale-data')] }), 2],
-    [() => { throw new Error('offline'); }, 2],
-    [async () => { throw new Error('network'); }, 2],
+    [() => ({ tracks: [track('favorite'), track('other', { artists: [] })] }), 0],
+    [() => null, 3], [() => ({ tracks: {} }), 3], [() => [track('new')], 3],
+    [() => ({ ok: false, error: { kind: 'network' }, tracks: [track('stale-data')] }), 3],
+    [() => { throw new Error('offline'); }, 3],
+    [async () => { throw new Error('network'); }, 3],
   ]) {
     const result = await modes.buildHeartQueue({ favorites: [track('favorite')], loadArtist: reply, search: reply });
-    assert.deepEqual(result, { status: 'no-candidates', queue: [], recommendations: [], requests: 2, failures });
+    assert.deepEqual(result, { status: 'no-candidates', queue: [], recommendations: [], requests: 3, failures });
   }
   assert.deepEqual(await modes.buildHeartQueue({ favorites: [track('favorite')] }), {
     status: 'no-candidates', queue: [], recommendations: [], requests: 0, failures: 0,
   });
 });
 
-test('heart plans deduplicated artist, artist-name, and album searches from seed metadata only', async () => {
+test('heart plans deduplicated artist, artist-name, album, and title searches from seed metadata only', async () => {
   for (const [favorite, candidate, expectedCalls] of [
-    [track('f', { artists: [{ name: 'Name only' }] }), track('new', { artists: [{ name: 'Name only' }] }), [['search', 'Name only']]],
+    [track('f', { artists: [{ name: 'Name only' }] }), track('new', { artists: [{ name: 'Name only' }] }), [['search', 'Name only'], ['search', 'Song f']]],
     [track('f', { artists: [], album: { id: 'album', title: 'Album only' } }),
-      track('new', { artists: [], album: { id: 'album', title: 'Album only' } }), [['search', 'Album only']]],
+      track('new', { artists: [], album: { id: 'album', title: 'Album only' } }), [['search', 'Album only'], ['search', 'Song f']]],
   ]) {
     const calls = [];
     const result = await modes.buildHeartQueue({ favorites: [favorite],
@@ -112,7 +285,7 @@ test('heart plans deduplicated artist, artist-name, and album searches from seed
     search: async query => { calls.push(['search', query]); return { tracks: [track('new-a')] }; },
   });
   assert.deepEqual(ids(result.recommendations), ['new-a', 'new-b']);
-  assert.deepEqual(calls, [['artist', 'artist-a'], ['search', '歌手 A'], ['artist', 'artist-b']]);
+  assert.deepEqual(calls, [['artist', 'artist-a'], ['search', 'Song f1'], ['search', 'Song f2'], ['search', '歌手 A'], ['artist', 'artist-b']]);
 });
 
 test('heart exposes an already-aborted signal without issuing requests or fallback', async () => {
@@ -193,7 +366,7 @@ test('heart caps favorite seeds but excludes every provided favorite ID, includi
   }
 });
 
-test('heart returns strictly alternating pairs and stops once its recommendation limit is met', async () => {
+test('heart returns strictly alternating pairs within its limit without skipping reserved exploration reads', async () => {
   const favorites = Array.from({ length: 5 }, (_, i) => track(`f${i}`));
   for (const [maxRecommendations, expected] of [[2, 2], [1, 1], [0, 0], [999, 5]]) {
     let calls = 0;
@@ -202,7 +375,7 @@ test('heart returns strictly alternating pairs and stops once its recommendation
     assert.equal(result.status, expected ? 'ready' : 'no-candidates');
     assert.equal(result.queue.length, expected * 2);
     assert.equal(result.recommendations.length, expected);
-    assert.equal(calls, expected ? 1 : 0);
+    assert.equal(calls, expected ? 3 : 0);
     assert.equal(result.queue.every((item, i) => i % 2 === 0 ? item.id.startsWith('f') : item.id.startsWith('new')), true);
   }
   const partial = await modes.buildHeartQueue({ favorites, loadArtist: async () => ({ tracks: [track('only-new')] }) });
@@ -280,12 +453,12 @@ test('heart recovers only with real fallback data and never expands to artists s
   ] });
   const result = await modes.buildHeartQueue({ favorites: [track('f1'), track('f2')],
     loadArtist: async () => { throw new Error('artist read failed'); },
-    search: async () => ({ tracks: [collaboration,
+    search: async query => ({ tracks: query.startsWith('Song f') ? [] : [collaboration,
       track('guest-only', { artists: [{ id: 'guest', name: 'Guest' }] }), track('new')] }),
   });
   assert.equal(result.status, 'ready');
   assert.deepEqual(ids(result.recommendations), ['collaboration', 'new']);
-  assert.equal(result.requests, 2);
+  assert.equal(result.requests, 4);
   assert.equal(result.failures, 1);
 });
 

@@ -16,17 +16,24 @@ export type PadScreenProps = {
   currentId?: string;
   playing: boolean;
   onPlay: (tracks: Track[], index: number) => void;
+  onResume: () => void;
+  resumeTrack?: Track;
   onOpenFavorites: () => void;
   onOpenPlaylist: (playlist: Playlist) => void;
   onOpenPlaylists: () => void;
+  onOpenCharts: () => void;
   onSearch: (query: string) => void;
   onOpenSettings: () => void;
   onCheckUpdates: () => void;
   onOpenAbout: () => void;
+  onOpenDonation?: () => void;
   onLogin: () => void;
   onNotice: (message: string) => void;
   onOpenHistory: () => void;
   onToggleFavorite: (track: Track) => void;
+  onSelectHeart: () => void;
+  onCancelHeart: () => void;
+  heartPending?: boolean;
   onTrackMenu?: (track: Track, event: MouseEvent) => void;
 };
 
@@ -54,7 +61,7 @@ function CollectionArt() {
 
 // An auth update can precede the parent's library reset by one render.
 function accountProps(props: PadScreenProps): PadScreenProps {
-  return props.authenticated ? props : { ...props, displayName: undefined, favorites: [], history: [], playlists: [], total: 0 };
+  return props.authenticated ? props : { ...props, displayName: undefined, resumeTrack: undefined, favorites: [], history: [], playlists: [], total: 0 };
 }
 
 function playFrom(props: PadScreenProps, tracks: Track[], index: number) {
@@ -105,43 +112,42 @@ function SongGrid({ tracks, props }: { tracks: Track[]; props: PadScreenProps })
 export function PadHomeScreen(input: PadScreenProps) {
   const props = accountProps(input);
   const openFavorites = props.authenticated ? props.onOpenFavorites : props.onLogin;
-  const historyIndex = props.history.findIndex(track => track.id === props.currentId);
-  const favoriteIndex = props.favorites.findIndex(track => track.id === props.currentId);
-  const resumeFromHistory = historyIndex >= 0 || (favoriteIndex < 0 && props.history.length > 0);
-  const resumeTracks = resumeFromHistory ? props.history : props.favorites;
-  const resumeIndex = Math.max(0, resumeTracks === props.history ? historyIndex : favoriteIndex);
-  const resume = resumeTracks[resumeIndex];
-  const saved = props.favorites[0];
+  const resume = props.resumeTrack;
+
   const favoriteSummary = props.loading ? '正在读取收藏…' : props.total > 0 ? `已收藏 ${props.total} 首` : props.favorites.length ? `已加载 ${props.favorites.length} 首` : '还没有收藏音乐';
   const songs = props.favorites.length ? props.favorites : props.history;
   const artist = [...props.history, ...props.favorites].find(track => track.artists[0]?.name)?.artists[0]?.name;
   return (
     <div className="pad-screen pad-home" aria-label="首页内容" aria-busy={props.loading}>
       <section className="pad-home-features" aria-label="音乐快捷入口">
-        <FeatureCard tone="collection" label="打开我的收藏" title="我的收藏"
-          subtitle={props.authenticated ? favoriteSummary : '登录后查看你的音乐'}
-          top={<><Music2 /> MY MUSIC</>} art={<CollectionArt />} glyph={<ArrowUpRight />} onClick={openFavorites} />
-        <FeatureCard tone="listen" label="继续最近播放" title="现在就听"
-          subtitle={resume ? `${resume.title} · ${artistsOf(resume)}` : '从最近播放继续'}
-          top={<><Headphones /> {props.playing && resume?.id === props.currentId ? '正在播放' : 'Music'}</>}
+
+        <FeatureCard tone="listen" label="继续播放" title="继续播放"
+          subtitle={resume ? `${resume.title} · ${artistsOf(resume)}` : '暂无可继续播放的队列或历史'}
+          top={<><Headphones /> {props.playing && resume?.id === props.currentId ? '正在播放' : '播放队列'}</>}
           art={<Cover key={resume?.coverUrl ?? 'empty'} src={resume?.coverUrl} className="pad-feature-cover" radius={5} />}
           glyph={props.playing && resume?.id === props.currentId ? <AudioLines /> : undefined}
-          onClick={!props.authenticated ? props.onLogin : resume ? () => playFrom(props, resumeTracks, resumeIndex) : props.onOpenHistory} />
+          onClick={!props.authenticated ? props.onLogin : props.onResume} />
         <FeatureCard tone="daily" label="每日30首，未接入" title="每日30首" subtitle="每日推荐尚未接入"
           top={<><Music2 /> DAILY <span className="pad-unavailable">未接入</span></>}
           art={<span className="pad-daily-art"><i /><i /><i /><i /><b>30</b></span>}
           glyph={<LockKeyhole />} unavailable onClick={() => props.onNotice('每日推荐尚未接入，不提供替代推荐。')} />
-        <FeatureCard tone="saved" label="查看最近收藏" title="最近收藏"
-          subtitle={saved ? `${saved.title} · ${artistsOf(saved)}` : '把喜欢的歌，留在身边'}
-          top={<><Heart /> FAVORITES</>}
-          art={<Cover key={saved?.coverUrl ?? 'empty'} src={saved?.coverUrl} className="pad-feature-cover pad-sleeve" radius={3} />}
-          onClick={props.authenticated && saved ? () => playFrom(props, props.favorites, 0) : openFavorites} />
+        <FeatureCard tone="saved" label="新歌推荐，未接入" title="新歌推荐" subtitle="新歌推荐尚未接入"
+          top={<><Disc3 /> NEW <span className="pad-unavailable">未接入</span></>}
+          art={<Disc3 className="desktop-feature-symbol" />} glyph={<LockKeyhole />} unavailable
+          onClick={() => props.onNotice('新歌推荐尚未接入，不将搜索或播放历史充当官方新歌推荐。')} />
+        <FeatureCard tone="listen" label={props.heartPending ? '停止等待心动模式' : '心动模式'} title="心动模式"
+          subtitle={props.heartPending ? '正在关联与探索 · 点击停止等待' : '收藏＋关联与探索 · 非官方推荐'}
+          top={<><Heart /> HEART</>} art={<Heart className="desktop-feature-symbol" />} glyph={<Heart />}
+          onClick={!props.authenticated ? props.onLogin : props.heartPending ? props.onCancelHeart : props.onSelectHeart} />
+        <FeatureCard tone="collection" label="打开我的收藏" title="我的收藏"
+          subtitle={props.authenticated ? favoriteSummary : '登录后查看你的音乐'}
+          top={<><Music2 /> MY MUSIC</>} art={<CollectionArt />} glyph={<ArrowUpRight />} onClick={openFavorites} />
       </section>
       <nav className="pad-categories pad-home-categories" aria-label="首页分类">
         <Category label="精选" icon={<Star fill="currentColor" />} selected />
         <Category label="歌单" icon={<ListMusic variant="sleeve" />} onClick={props.authenticated ? props.onOpenPlaylists : props.onLogin} />
         <Category label="歌手" icon={<Mic2 />} onClick={() => artist ? props.onSearch(artist) : props.onNotice('还没有可浏览的歌手，可以先用顶部搜索寻找音乐。')} />
-        <Category label="排行榜" icon={<Trophy />} unavailable onClick={() => props.onNotice('排行榜尚未接入。')} />
+        <Category label="排行榜" icon={<Trophy />} onClick={props.onOpenCharts} />
         <Category label="分类" icon={<Shapes />} unavailable onClick={() => props.onNotice('曲库分类尚未接入。')} />
       </nav>
       <section className="pad-song-section" aria-label={props.favorites.length ? '收藏音乐' : '最近播放'}>
@@ -295,6 +301,7 @@ export function PadMineScreen(input: PadScreenProps) {
       <Ticket /><strong>权益兑换</strong><small>未接入</small><ChevronRight />
     </button>
     <div className="pad-mine-utilities">
+      {props.onOpenDonation ? <button type="button" aria-label="请维护者喝杯咖啡" onClick={props.onOpenDonation}><Heart /><strong>请维护者喝杯咖啡</strong><ChevronRight /></button> : null}
       <button type="button" aria-label="检查更新" onClick={props.onCheckUpdates}><RefreshCw /><strong>检查更新</strong><ChevronRight /></button>
       <button type="button" aria-label="关于" onClick={props.onOpenAbout}><Info /><strong>关于</strong><ChevronRight /></button>
       <button type="button" aria-label="设置" onClick={props.onOpenSettings}><Settings /><strong>设置</strong><ChevronRight /></button>

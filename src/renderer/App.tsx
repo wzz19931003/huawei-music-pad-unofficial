@@ -1,21 +1,29 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, Copy, Mail, Minus, Search, Square, X } from './PadIcons';
 import type { AppSettings, AuthStatus, LyricsCacheInfo, Playlist, Track, UpdateState } from '../shared/types';
+import { APP_BRAND_LABEL, APP_DISPLAY_NAME } from '../shared/app-name.mjs';
 import { api } from './lib/api';
 import { usePlayer } from './lib/player';
 import { FavoritesScreen, LoginScreen } from './screens';
 import { PlaylistScreen, PlaylistsScreen, SearchScreen, SettingsScreen } from './pages';
 import { PadPlayer } from './PadPlayer';
+import { DesktopLyricsToggle } from './DesktopLyricsToggle';
+import { connectDesktopLyricsControl, type DesktopLyricsControlView } from './desktop-lyrics-control';
+import { connectDesktopLyricsPublisher } from './desktop-lyrics-publisher';
 import { UpdatePanel, AboutScreen } from './UpdatePanel';
+import { DonationScreen } from './DonationScreen';
+import { PublicChartsScreen } from './PublicChartsScreen';
 import { PadNavigation, type PadTab } from './PadNavigation';
 import { activePadTab } from './pad-navigation.mjs';
 import { PadHomeScreen, PadHallScreen, PadCafeScreen, PadMineScreen, type PadScreenProps } from './PadScreens';
 import { TrackRow } from './ui';
 import { QueuePanel, TrackMenu, type MenuTarget } from './QueuePanel';
 import logo from './assets/app-icon.png';
+import './desktop.css';
+import { connectDesktopCommands, connectDesktopKeyboard, openKeyboardSongMenu } from './desktop-controls';
 
 type Route =
-  | { name: 'home' | 'hall' | 'cafe' | 'mine' | 'history' | 'favorites' | 'playlists' | 'settings' | 'updates' | 'about' }
+  | { name: 'home' | 'hall' | 'cafe' | 'mine' | 'history' | 'favorites' | 'playlists' | 'settings' | 'updates' | 'about' | 'donation' | 'charts' }
   | { name: 'playlist'; playlist: Playlist }
   | { name: 'search'; query: string };
 
@@ -38,6 +46,18 @@ function WindowControls({ maximized }: { maximized: boolean }) {
         <X size={16} />
       </button>
     </div>
+  );
+}
+
+export function WindowHeader({ maximized }: { maximized: boolean }) {
+  return (
+    <header className="titlebar pad-windowbar">
+      <div className="window-brand" title={APP_DISPLAY_NAME}>
+        <img src={logo} alt="" className="window-brand-logo" draggable={false} />
+        <span>{APP_BRAND_LABEL}</span>
+      </div>
+      <WindowControls maximized={maximized} />
+    </header>
   );
 }
 
@@ -76,6 +96,9 @@ export function App() {
   const mainRef = useRef<HTMLElement | null>(null);
   const [queueOpen, setQueueOpen] = useState(false);
   const [menu, setMenu] = useState<MenuTarget | null>(null);
+  const [desktopLyricsView, setDesktopLyricsView] = useState<DesktopLyricsControlView | null>(null);
+  const lyricsControlRef = useRef<ReturnType<typeof connectDesktopLyricsControl> | null>(null);
+  const lyricsPublisherRef = useRef<ReturnType<typeof connectDesktopLyricsPublisher> | null>(null);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -115,6 +138,29 @@ export function App() {
 
   const playerRef = useRef(player);
   playerRef.current = player;
+  useEffect(() => connectDesktopCommands(playerRef), []);
+
+  useEffect(() => {
+    const control = connectDesktopLyricsControl({
+      api: window.desktop?.desktopLyrics, onView: setDesktopLyricsView, onNotice: showToast,
+    });
+    lyricsControlRef.current = control;
+    return () => { control.stop(); if (lyricsControlRef.current === control) lyricsControlRef.current = null; };
+  }, [showToast]);
+
+  useEffect(() => {
+    const nativeApi = window.desktop?.desktopLyrics;
+    if (!nativeApi) return;
+    const publisher = connectDesktopLyricsPublisher({
+      api: nativeApi, getPlayer: () => playerRef.current, onNotice: notice => showToast(notice.message),
+    });
+    lyricsPublisherRef.current = publisher;
+    return () => { if (lyricsPublisherRef.current === publisher) lyricsPublisherRef.current = null; publisher.stop(); };
+  }, [showToast]);
+
+  useEffect(() => {
+    lyricsPublisherRef.current?.pulse();
+  }, [player.current?.id, player.lyrics, player.playing, player.buffering]);
 
   const play = useCallback(
     (tracks: Track[], index: number) => {
@@ -158,7 +204,9 @@ export function App() {
   );
 
   const handleTrackMenu = useCallback((track: Track, event: React.MouseEvent) => {
-    setMenu({ track, x: event.clientX, y: event.clientY });
+    const returnFocus = (event.target as Element).closest<HTMLElement>('button, [role="button"], [tabindex]')
+      ?? event.currentTarget.querySelector<HTMLElement>('button, [tabindex]') ?? undefined;
+    setMenu({ track, x: event.clientX, y: event.clientY, returnFocus });
   }, []);
 
   // 启动：读登录态、设置；已登录就直接拉资料库。
@@ -245,24 +293,60 @@ export function App() {
   }, [route]);
 
   // 队列持久化：切歌/换队列后延迟落盘，避免频繁写。
+  const queueObservedNonemptyRef = useRef(false);
+  const queueSaveDirtyRef = useRef(false);
+  const queueSaveInFlightRef = useRef(false);
+  const queueSaveFailedRef = useRef(false);
   useEffect(() => {
-    if (player.queue.length === 0) return;
+    if (player.queue.length > 0) queueObservedNonemptyRef.current = true;
+    // 启动空态不能擦掉尚未恢复的旧队列；用户移除最后一项后则必须写空。
+    if (!queueObservedNonemptyRef.current) return;
+    queueSaveDirtyRef.current = true;
     window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(() => {
-      void api.saveQueue(player.queue, player.index, player.position);
+    saveTimer.current = window.setTimeout(async () => {
+      if (queueSaveInFlightRef.current || updateActionBusyRef.current) return;
+      queueSaveInFlightRef.current = true;
+      try {
+        const saved = await api.saveQueue(player.queue, player.index, player.queue.length === 0 ? 0 : player.position);
+        if (!saved?.ok) throw new Error('queue save failed');
+        if (playerRef.current.queue === player.queue && playerRef.current.index === player.index) {
+          queueSaveDirtyRef.current = false;
+          queueSaveFailedRef.current = false;
+        }
+      } catch {
+        if (!queueSaveFailedRef.current) showToast('播放队列未能保存，将自动重试。');
+        queueSaveFailedRef.current = true;
+      } finally {
+        queueSaveInFlightRef.current = false;
+      }
     }, 1200);
     return () => window.clearTimeout(saveTimer.current);
-  }, [player.queue, player.index]);
+  }, [player.queue, player.index, showToast]);
 
-  // 进阶：正在播时每 10 秒把进度也存一次，重开客户端能接着听。
+  // 每 10 秒保存进度，也重试尚未确认的明确清空；成功后空态不再轮询写入。
   useEffect(() => {
-    const timer = window.setInterval(() => {
+    const timer = window.setInterval(async () => {
       const latest = playerRef.current;
-      if (latest.queue.length === 0 || latest.index < 0) return;
-      void api.saveQueue(latest.queue, latest.index, latest.positionCommit.current);
+      const clearedQueue = latest.queue.length === 0;
+      if (clearedQueue ? !queueObservedNonemptyRef.current || !queueSaveDirtyRef.current : latest.index < 0) return;
+      if (queueSaveInFlightRef.current || updateActionBusyRef.current) return;
+      queueSaveInFlightRef.current = true;
+      try {
+        const saved = await api.saveQueue(latest.queue, clearedQueue ? -1 : latest.index, clearedQueue ? 0 : latest.positionCommit.current);
+        if (!saved?.ok) throw new Error('queue save failed');
+        if (playerRef.current.queue === latest.queue && playerRef.current.index === latest.index) {
+          queueSaveDirtyRef.current = false;
+          queueSaveFailedRef.current = false;
+        }
+      } catch {
+        if (!queueSaveFailedRef.current) showToast('播放队列未能保存，将自动重试。');
+        queueSaveFailedRef.current = true;
+      } finally {
+        queueSaveInFlightRef.current = false;
+      }
     }, 10000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [showToast]);
 
   // 启动时恢复上次队列（定位到那一首、那个进度，但不自动出声）。
   const restoredRef = useRef(false);
@@ -272,7 +356,7 @@ export function App() {
     restoredRef.current = true;
     void api.loadQueue().then(result => {
       if (!result || !result.ok || !result.data || result.data.tracks.length === 0) return;
-      if (playerRef.current.queue.length > 0) return;
+      if (playerRef.current.queue.length > 0 || queueObservedNonemptyRef.current) return;
       playerRef.current.restore(result.data.tracks, result.data.index, result.data.positionSeconds);
     });
   }, [booting, auth?.authenticated]);
@@ -285,31 +369,9 @@ export function App() {
     );
   }, [settings?.playMode, settings?.repeatMode, settings?.shuffle]);
 
-  // 空格：播放/暂停（输入框里不抢键）；Esc 收播放页。
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setPlayerOpen(false);
-        setQueueOpen(false);
-        setMenu(null);
-        return;
-      }
-      const target = event.target as HTMLElement | null;
-      if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
-      if (event.code === 'Space') {
-        if (target?.closest('button, a, [role="button"], [contenteditable="true"]')) return;
-        event.preventDefault();
-        player.toggle();
-      }
-      if (event.key === 'Escape') {
-        setPlayerOpen(false);
-        setQueueOpen(false);
-        setMenu(null);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [player]);
+  useEffect(() => connectDesktopKeyboard(playerRef, () => {
+    setPlayerOpen(false); setQueueOpen(false); setMenu(null);
+  }), []);
 
   const handleLogin = useCallback(async () => {
     playerRef.current.cancelHeart();
@@ -351,6 +413,25 @@ export function App() {
       showToast('退出登录没有成功。');
     }
   }, [showToast]);
+
+  // Resume the existing singleton source; never replay a presentation list over it.
+  const handleResume = useCallback(() => {
+    if (!auth?.authenticated) { void handleLogin(); return; }
+    const latest = playerRef.current;
+    if (latest.current) {
+      const clock = latest.readClock();
+      // A pending resolve may still expose the previous committed source. Do not toggle it.
+      if (clock.trackId === latest.current.id && !clock.playing && !latest.playing && !latest.buffering) latest.toggle();
+      setPlayerOpen(true);
+      return;
+    }
+    const tracks = latest.queue.length ? latest.queue : history;
+    const at = tracks.findIndex(track => track.available);
+    if (at < 0) { showToast('暂无可继续播放的队列或历史，请先选择歌曲。'); return; }
+    if (latest.queue.length) latest.jumpTo(at);
+    else latest.playFrom(tracks, at);
+    setPlayerOpen(true);
+  }, [auth?.authenticated, history, handleLogin, showToast]);
 
   const pendingFavoriteIds = useRef(new Set<string>());
   const handleToggleFavorite = useCallback(async (track: Track) => {
@@ -434,11 +515,28 @@ export function App() {
           native.status === 'error' && native.errorCode === 'UPDATE_INSTALL_FAILED') return;
       }
       if (action === 'install') {
-        const latest = playerRef.current;
-        if (latest.queue.length && latest.index >= 0) {
-          const saved = await api.saveQueue(latest.queue, latest.index, latest.positionCommit.current);
-          if (!saved?.ok) throw new Error('queue save failed');
+        let stable = false;
+        // Queue actions remain available while saving. Only an acknowledgement
+        // for the still-current tracks/index may cross the install boundary.
+        // Continuous edits abort this attempt rather than spinning indefinitely.
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const latest = playerRef.current;
+          const clearedQueue = latest.queue.length === 0 && queueObservedNonemptyRef.current;
+          if (latest.queue.length && latest.index >= 0 || clearedQueue) {
+            window.clearTimeout(saveTimer.current);
+            queueSaveDirtyRef.current = true;
+            const saved = await api.saveQueue(latest.queue, clearedQueue ? -1 : latest.index, clearedQueue ? 0 : latest.positionCommit.current);
+            if (!saved?.ok) throw new Error('queue save failed');
+          }
+          if (playerRef.current.queue === latest.queue && playerRef.current.index === latest.index) {
+            queueSaveDirtyRef.current = false;
+            queueSaveFailedRef.current = false;
+            stable = true;
+            break;
+          }
         }
+        if (!stable) throw new Error('queue changed while saving');
+        const latest = playerRef.current;
         if (latest.playing) latest.toggle();
       }
       setUpdateState(await api.updates[action]());
@@ -457,6 +555,10 @@ export function App() {
     void runUpdateAction('check');
   };
   const openAbout = () => { setSearchQuery(''); setPlayerOpen(false); setRoute({ name: 'about' }); };
+  const openDonation = () => {
+    setSearchQuery(''); setPlayerOpen(false); setQueueOpen(false); setMenu(null);
+    setRoute({ name: 'donation' });
+  };
   const updateProps = { state: updateState, actionError: updateActionError, busy: updateActionBusy, onCheck: () => void runUpdateAction('check'), onDownload: () => void runUpdateAction('download'), onInstall: () => void runUpdateAction('install') };
   const authenticated = Boolean(auth?.authenticated);
   const displayName = auth?.displayName;
@@ -481,30 +583,36 @@ export function App() {
   const titles: Record<string, string> = {
     home: '首页', hall: '音乐厅', cafe: 'café听', mine: '我的', favorites: '我的收藏',
     playlists: '我的歌单', playlist: route.name === 'playlist' ? route.playlist.title : '歌单',
-    search: '搜索', settings: '设置', history: '最近播放', updates: '软件更新', about: '关于',
+    search: '搜索', settings: '设置', history: '最近播放', updates: '软件更新', about: '关于', donation: '支持维护者', charts: '热门榜单',
   };
   const secondary = !['home', 'hall', 'cafe', 'mine'].includes(route.name);
   const screenProps: PadScreenProps = {
     authenticated, displayName, favorites, history, playlists, total,
     loading: libraryLoading || playlistsLoading, currentId: player.current?.id, playing: player.playing,
     onPlay: play, onOpenFavorites: openFavorites, onOpenPlaylist: openPlaylist,
+    onResume: handleResume, resumeTrack: player.current ?? player.queue.find(track => track.available) ?? history.find(track => track.available),
     onOpenPlaylists: () => setRoute({ name: 'playlists' }), onSearch: setSearchQuery,
+    onOpenCharts: () => { setSearchQuery(''); setRoute({ name: 'charts' }); },
     onOpenSettings: () => setRoute({ name: 'settings' }), onLogin: () => void handleLogin(),
-    onCheckUpdates: openUpdates, onOpenAbout: openAbout,
+    onCheckUpdates: openUpdates, onOpenAbout: openAbout, onOpenDonation: openDonation,
     onNotice: showToast, onOpenHistory: () => setRoute({ name: 'history' }),
     onToggleFavorite: track => void handleToggleFavorite(track), onTrackMenu: handleTrackMenu,
+    heartPending: player.heartStatus === 'loading', onCancelHeart: player.cancelHeart,
+    onSelectHeart: () => {
+      void playerRef.current.selectMode('heart').then(selected => {
+        if (selected) setPlayerOpen(true);
+      }).catch(() => showToast('心动模式未能启动，当前播放保持不变，请稍后重试。'));
+    },
   };
 
   return (
-    <div className={`app pad-app${playerOpen ? ' is-player' : ''}`} data-page={playerOpen ? 'player' : route.name}>
-      <header className="titlebar pad-windowbar">
-        <span className="pad-unofficial">华为音乐（非官方）<span> / Pad 布局</span></span>
-        <WindowControls maximized={maximized} />
-      </header>
+    <div className={`app pad-app desktop-app${playerOpen ? ' is-player' : ''}`} data-page={playerOpen ? 'player' : route.name}
+      onKeyDownCapture={openKeyboardSongMenu}>
+      <WindowHeader maximized={maximized} />
       <div className="stage pad-stage" inert={playerOpen} aria-hidden={playerOpen || undefined}>
         <div className="pad-page-head">
           <div className="pad-heading">
-            {secondary ? <button className="icon-button pad-back" type="button" onClick={() => navigatePad('mine')} aria-label="返回我的"><ChevronLeft size={24} /></button> : null}
+            {secondary ? <button className="icon-button pad-back" type="button" onClick={() => navigatePad(route.name === 'charts' ? 'home' : 'mine')} aria-label={route.name === 'charts' ? '返回首页' : '返回我的'}><ChevronLeft size={24} /></button> : null}
             <h1>{titles[route.name]}</h1>
           </div>
           {route.name !== 'mine' ? <label className="titlebar-search pad-search">
@@ -521,6 +629,10 @@ export function App() {
           : route.name === 'mine' ? <PadMineScreen {...screenProps} />
           : route.name === 'updates' ? <div className="screen"><UpdatePanel {...updateProps} /></div>
           : route.name === 'about' ? <AboutScreen {...updateProps} />
+          : route.name === 'donation' ? <DonationScreen />
+          : route.name === 'charts' ? <PublicChartsScreen key={`charts-${accountEpoch}-${authenticated}`} authenticated={authenticated}
+              currentId={player.current?.id} playing={player.playing} onPlay={play} onAddToQueue={handleAddToQueue}
+              onTrackMenu={handleTrackMenu} onLogin={() => void handleLogin()} onNotice={showToast} onBack={() => setRoute({ name: 'home' })} />
           : !authenticated && route.name !== 'search' && route.name !== 'settings' ? <LoginScreen pending={loginPending} message={loginMessage} onLogin={() => void handleLogin()} />
           : route.name === 'favorites' ? <FavoritesScreen tracks={favorites} total={total} loading={libraryLoading}
               currentId={player.current?.id} playing={player.playing} filter={favFilter} onFilterChange={setFavFilter}
@@ -542,8 +654,11 @@ export function App() {
         </main>
       </div>
       <PadPlayer player={player} open={playerOpen} onOpen={() => setPlayerOpen(true)} onClose={() => setPlayerOpen(false)}
-        onToggleQueue={() => setQueueOpen(value => !value)} queueOpen={queueOpen} onFavoriteChanged={() => void loadLibrary()} />
-      <PadNavigation active={activePadTab(route.name, playerOpen)} onNavigate={navigatePad} />
+        onToggleQueue={() => setQueueOpen(value => !value)} queueOpen={queueOpen} onFavoriteChanged={() => void loadLibrary()}
+        desktopLyricsControl={<DesktopLyricsToggle state={desktopLyricsView} pending={desktopLyricsView?.pending ?? false}
+          onToggle={() => { void lyricsControlRef.current?.toggle(); }} />} />
+      <PadNavigation active={activePadTab(route.name === 'charts' ? 'home' : route.name, playerOpen)} activeRoute={route.name} onNavigate={navigatePad}
+        onOpenLibrary={name => { setSearchQuery(''); setPlayerOpen(false); setQueueOpen(false); setMenu(null); setRoute({ name }); }} />
       <QueuePanel player={player} open={queueOpen} onClose={() => setQueueOpen(false)} />
       {menu ? <TrackMenu target={menu} onClose={() => setMenu(null)} onPlayNow={() => handleMenuPlay(menu.track)}
         onPlayNext={() => handlePlayNext(menu.track)} onAddToQueue={() => handleAddToQueue(menu.track)} /> : null}

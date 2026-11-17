@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronLeft, Info, ListMusic, LogIn, LogOut, Play, RefreshCw, Settings, ShieldCheck, Trash2 } from './PadIcons';
 import type { AppSettings, AuthStatus, LyricsCacheInfo, Playlist, Track } from '../shared/types';
+import { APP_DISPLAY_NAME } from '../shared/app-name.mjs';
 import { api } from './lib/api';
 import { artistsOf, Cover, EmptyState, SectionHeader, SkeletonRows, TrackRow } from './ui';
 
@@ -624,7 +625,7 @@ export function SettingsScreen({
         <SettingRow title="软件更新" hint="后台下载，校验后由你确认重启"
           control={<button type="button" className="ghost-button" onClick={onCheckUpdates}><RefreshCw size={15} />检查更新</button>} />
         <SettingRow
-          title="华为音乐 · 非官方客户端"
+          title={APP_DISPLAY_NAME}
           hint={`${version} · AGPL-3.0-only · 与华为无隶属或授权关系`}
           control={
             <div className="pad-settings-app-actions"><button type="button" className="ghost-button" aria-label="关于" onClick={onOpenAbout}><Info size={15} />关于</button>

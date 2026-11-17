@@ -3,13 +3,16 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { registerIpc } from './ipc';
 import { createDesktopUpdater } from './desktop-updater';
+import { createDesktopLyricsController } from './desktop-lyrics';
+import type { DesktopLyricsController } from './desktop-lyrics';
+import { createDesktopLyricsStore } from './desktop-lyrics-store.mjs';
 import { channels } from '../shared/channels';
 import { AuthManager } from './auth-manager';
 import { createAuthManagerLifecycle } from './auth-manager-lifecycle.mjs';
 import { applyNodeProxy, electronBypassRules, proxyConfigurationProblem, proxyRules, readProxySettings } from './proxy.mjs';
 import { shouldBlockMediaRequest } from '../safe-media-url.mjs';
 import { loadSettings } from './storage';
-import { TRAY_ICON_PNG_BASE64 } from './icons';
+import { APP_ICON_PNG_BASE64, TRAY_ICON_PNG_BASE64 } from './icons';
 import { APP_DISPLAY_NAME } from '../shared/app-name.mjs';
 import type { AppSettings } from '../shared/types';
 
@@ -18,6 +21,11 @@ let tray: Tray | null = null;
 let quitting = false;
 let closeBehavior: AppSettings['closeBehavior'] = 'quit';
 let desktopUpdater: ReturnType<typeof createDesktopUpdater> | null = null;
+let desktopLyrics: DesktopLyricsController | null = null;
+let desktopLyricsReady: Promise<DesktopLyricsController> | null = null;
+let lyricsShutdownStarted = false;
+let lyricsShutdownComplete = false;
+let trayStateKey = '';
 const rendererUrl = pathToFileURL(join(__dirname, '../renderer/index.html')).href;
 const authManagerLifecycle = createAuthManagerLifecycle(async () => {
   const auth = new AuthManager(message => mainWindow?.webContents.send('auth:progress', message),
@@ -35,7 +43,8 @@ async function createWindow(): Promise<void> {
   const window = new BrowserWindow({
     width: 1320, height: 840, minWidth: 960, minHeight: 620,
     title: APP_DISPLAY_NAME,
-    icon: join(__dirname, '../../build/icon.png'),
+    // Embed it so the packaged ASAR does not depend on the source-only build/ directory.
+    icon: nativeImage.createFromDataURL(`data:image/png;base64,${APP_ICON_PNG_BASE64}`),
     // 无系统标题栏：顶部控制条由渲染层自己画，窗口内容和边框融为一体。
     frame: false,
     backgroundColor: '#08080a',
@@ -47,6 +56,7 @@ async function createWindow(): Promise<void> {
     },
   });
   mainWindow = window;
+  desktopLyrics?.attachMainWindow();
   window.once('closed', () => { if (mainWindow === window) mainWindow = null; });
   // 最大化状态回推给渲染层，用来切换「还原/最大化」图标。
   const pushMaximized = () => {
@@ -57,9 +67,15 @@ async function createWindow(): Promise<void> {
   window.on('unmaximize', pushMaximized);
   // Default is a real quit; hiding to the tray only happens when the user opts in.
   window.on('close', event => {
-    if (quitting || closeBehavior !== 'tray' || !tray) return;
-    event.preventDefault();
-    window.hide();
+    if (quitting) return;
+    if (closeBehavior === 'tray' && tray) {
+      event.preventDefault();
+      window.hide();
+    } else if (process.platform !== 'darwin') {
+      // A visible lyric window would otherwise prevent window-all-closed.
+      event.preventDefault();
+      app.quit();
+    }
   });
   try {
     const auth = await authManagerLifecycle.get();
@@ -95,20 +111,35 @@ function showMainWindow(): void {
   mainWindow.focus();
 }
 
+function refreshTrayMenu(): void {
+  if (!tray || tray.isDestroyed()) return;
+  const state = desktopLyrics?.getState();
+  const key = [Boolean(desktopLyrics), Boolean(state?.shown), Boolean(state?.preferences.locked)].join(':');
+  if (key === trayStateKey) return;
+  trayStateKey = key;
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: '显示窗口', click: showMainWindow },
+    { type: 'separator' },
+    { label: '播放 / 暂停', click: () => sendPlayerCommand('play-pause') },
+    { label: '上一首', click: () => sendPlayerCommand('previous') },
+    { label: '下一首', click: () => sendPlayerCommand('next') },
+    { type: 'separator' },
+    { id: 'desktop-lyrics-toggle', label: '桌面歌词', type: 'checkbox', checked: Boolean(state?.shown), enabled: Boolean(desktopLyrics),
+      click: () => { const controller = desktopLyrics; if (controller) void controller.setVisible(!controller.getState().shown); } },
+    { id: 'desktop-lyrics-unlock', label: '解锁桌面歌词（可拖动）', enabled: Boolean(state?.preferences.locked),
+      click: () => { void desktopLyrics?.setLocked(false); } },
+    { type: 'separator' },
+    { label: '退出程序', click: () => { quitting = true; app.quit(); } },
+  ]));
+}
+
 function createTray(): void {
   try {
     const image = nativeImage.createFromDataURL(`data:image/png;base64,${TRAY_ICON_PNG_BASE64}`);
     tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image);
     tray.setToolTip(APP_DISPLAY_NAME);
-    tray.setContextMenu(Menu.buildFromTemplate([
-      { label: '显示窗口', click: showMainWindow },
-      { type: 'separator' },
-      { label: '播放 / 暂停', click: () => sendPlayerCommand('play-pause') },
-      { label: '上一首', click: () => sendPlayerCommand('previous') },
-      { label: '下一首', click: () => sendPlayerCommand('next') },
-      { type: 'separator' },
-      { label: '退出程序', click: () => { quitting = true; app.quit(); } },
-    ]));
+    trayStateKey = '';
+    refreshTrayMenu();
     tray.on('click', showMainWindow);
   } catch {
     // Some Linux desktops have no tray host; keep the normal window/quit behaviour.
@@ -174,6 +205,14 @@ app.whenReady().then(() => {
   const settingsReady = loadSettings().then(settings => { closeBehavior = settings.closeBehavior; });
   configureApplicationMenu();
   createTray();
+  desktopLyricsReady = createDesktopLyricsController({
+    getMainWindow: () => mainWindow && !mainWindow.isDestroyed() ? mainWindow : null,
+    mainDocumentUrl: rendererUrl,
+    entry: { htmlPath: join(__dirname, '../renderer/desktop-lyrics.html'), preloadPath: join(__dirname, '../preload/desktop-lyrics.cjs') },
+    storage: createDesktopLyricsStore(app.getPath('userData')),
+    hasRecovery: () => Boolean(tray && !tray.isDestroyed()),
+    onState: refreshTrayMenu,
+  }).then(controller => { desktopLyrics = controller; refreshTrayMenu(); return controller; });
   registerMediaKeys();
   session.defaultSession.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, (details, callback) => {
     callback({ cancel: shouldBlockMediaRequest(details.resourceType, details.url) });
@@ -188,10 +227,10 @@ app.whenReady().then(() => {
     : process.env.HWMUSIC_USE_SYSTEM_PROXY === '1'
       ? Promise.resolve()
       : session.defaultSession.setProxy({ mode: 'direct' });
-  void Promise.all([settingsReady, proxyReady])
-    .then(() => createWindow().catch(() => {
+  void Promise.all([settingsReady, proxyReady, desktopLyricsReady])
+    .then(() => { if (quitting) return; return createWindow().catch(() => {
       failStartup('应用启动失败', '无法初始化应用窗口。请检查本机应用数据目录权限后重启。');
-    }))
+    }); })
     .catch(() => failStartup('代理配置失败', '无法应用当前 HTTP(S) 代理配置。为避免绕过代理，本次不会直连网络。请检查代理设置后重启。'));
   app.on('activate', () => {
     if (!mainWindow || mainWindow.isDestroyed()) {
@@ -202,7 +241,19 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 
-app.on('before-quit', () => { quitting = true; });
+app.on('before-quit', event => {
+  quitting = true;
+  if (!desktopLyricsReady || lyricsShutdownComplete) return;
+  event.preventDefault();
+  if (lyricsShutdownStarted) return;
+  lyricsShutdownStarted = true;
+  // Finish bounded preference writes, remove listeners/IPC and destroy the overlay
+  // before allowing the actual application quit; never leave an orphan float.
+  void desktopLyricsReady.then(controller => controller.dispose()).catch(() => {}).finally(() => {
+    lyricsShutdownComplete = true;
+    app.quit();
+  });
+});
 app.on('will-quit', () => {
   desktopUpdater?.dispose();
   globalShortcut.unregisterAll();

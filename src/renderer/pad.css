@@ -29,8 +29,10 @@
 .pad-app .pad-main > .screen { padding: 0; }
 .pad-app .pad-main > .screen > .screen-head h1 { display: none; }
 .pad-app .pad-windowbar { position: fixed; inset: 0 0 auto; z-index: 200; display: flex; align-items: center; -webkit-app-region: drag; }
-.pad-unofficial { font-size: 10px; color: var(--faint); letter-spacing: .03em; }
-.pad-unofficial > span { opacity: .7; }
+/* Absolute centering uses the whole window, not the space left by its controls. */
+.window-brand { position: absolute; left: 50%; top: 0; height: 100%; transform: translateX(-50%); display: flex; align-items: center; gap: var(--brand-title-gap); max-width: 50%; color: var(--text); font-size: var(--brand-title-size); font-weight: 600; white-space: nowrap; pointer-events: none; -webkit-app-region: drag; }
+.window-brand > span { overflow: hidden; text-overflow: ellipsis; }
+.window-brand-logo { display: block; width: var(--brand-logo-size); height: var(--brand-logo-size); object-fit: contain; flex: none; }
 .pad-page-head { display: flex; align-items: center; justify-content: space-between; gap: 28px; padding: 0 var(--pad-edge); min-width: 0; }
 .pad-heading { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .pad-heading > h1 { font-size: var(--pad-page-title); margin: 0; letter-spacing: .01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.25; }
@@ -57,9 +59,9 @@
 .pad-about-notices h3 { color: var(--text); }
 .pad-no-content { padding: 50px; text-align: center; color: var(--muted); }
 .pad-app .screen { max-width: none; padding: 28px var(--pad-edge) 0; }
-.pad-app .titlebar { height: var(--pad-window-height); min-height: 0; padding: 0 var(--pad-edge); background: var(--bg); border: 0; }
-.pad-app .window-controls { margin-right: calc(-1 * var(--pad-edge)); height: var(--pad-window-height); }
-.pad-app .window-button { height: var(--pad-window-height); width: 42px; }
+.pad-app .titlebar { height: var(--pad-window-height); min-height: 0; padding: 0 var(--pad-edge); justify-content: flex-end; background: var(--bg); border: 0; }
+.pad-app .window-controls { position: relative; z-index: 1; margin-right: calc(-1 * var(--pad-edge)); height: var(--pad-window-height); -webkit-app-region: no-drag; }
+.pad-app .window-button { height: var(--pad-window-height); width: 42px; -webkit-app-region: no-drag; }
 .pad-navigation { position: fixed; z-index: 160; bottom: var(--pad-dock-bottom); left: var(--pad-edge); width: var(--pad-dock-width); height: var(--pad-dock-height); display: flex; align-items: stretch; padding: 7px 10px; border: 1px solid var(--pad-glass-line); border-radius: 999px; background: var(--pad-glass); box-shadow: inset 0 1px 2px rgba(255,255,255,.14),0 6px 28px rgba(0,0,0,.32); backdrop-filter: blur(28px) saturate(1.3); -webkit-app-region: no-drag; }
 .pad-navigation.is-centered { left: 50%; transform: translateX(-50%); }
 .pad-nav-item { display: flex; flex: 1; align-items: center; justify-content: center; flex-direction: column; gap: 3px; min-width: 0; padding: 0; border: 0; border-radius: 18px; background: transparent; font-size: 12px; line-height: 1.2; cursor: pointer; color: var(--text); }
@@ -85,12 +87,12 @@
 .pad-mini-meta strong { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pad-mini-meta > span { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pad-control { display: inline-grid; place-items: center; flex: none; border: 0; background: none; color: var(--text); padding: 4px; border-radius: 10px; cursor: pointer; }
-.pad-control > svg { width: 22px; height: 22px; stroke-width: 1.8; }
+.pad-control > svg { width: 22px; height: 22px; }
 .pad-control:hover { background: rgba(255,255,255,.08); }
 .pad-control.is-active, .pad-like.is-active { color: var(--like); }
 .pad-control:disabled { opacity: .32; cursor: default; }
 .pad-play-toggle { display: grid; place-items: center; border: 0; border-radius: 50%; width: 26px; height: 26px; background: var(--text); color: var(--bg); padding: 5px; flex: none; cursor: pointer; }
-.pad-play-toggle > svg { width: 100%; height: 100%; stroke-width: 2; }
+.pad-play-toggle > svg { width: 100%; height: 100%; }
 .pad-play-toggle:disabled { opacity: .32; cursor: default; }
 .pad-player-screen { margin: 0; position: fixed; inset: var(--pad-window-height) 0 0; overflow: hidden; z-index: 120; background: var(--pad-player-shade); animation: pad-player-enter .28s ease-out; }
 .pad-player-background { position: absolute; inset: 0 auto 0 0; width: min(100%, calc(100vh - var(--pad-window-height))); height: 100%; object-fit: cover; object-position: center; opacity: .9; }

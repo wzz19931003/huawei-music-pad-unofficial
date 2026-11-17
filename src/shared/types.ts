@@ -5,6 +5,13 @@ export type UpdateState = {
   progress?: number;
   message: string;
   errorCode?: string;
+  /** Main bounds: 6 versions, 12 sections/version, 8 items/section,
+   * 280 UTF-16 units/item and 6000 text units total. Never HTML or link targets. */
+  releaseNotes?: readonly {
+    version: string;
+    sections: readonly { kind: 'text' | 'added' | 'improved' | 'fixed'; items: readonly string[] }[];
+  }[];
+  releaseNotesTruncated?: boolean;
 };
 
 export type ErrorKind = 'auth' | 'permission' | 'network' | 'unsupported' | 'invalid' | 'unknown';
@@ -48,6 +55,9 @@ export type Playlist = {
 
 export type PlaylistList = { playlists: Playlist[]; truncated: boolean; cacheHint?: string; cached?: boolean; cachedAt?: number };
 export type PlaylistDetail = { playlist: Playlist; tracks: Track[]; nextStart: number; hasMore: boolean; cacheHint?: string; cached?: boolean; cachedAt?: number };
+export type PublicChartCatalog = { source: 'huawei-public-h5'; scope: 'featured'; charts: Playlist[]; fetchedAt: string };
+export type PublicChartDetail = PlaylistDetail & { updatedAtRaw?: string };
+export type PublicChartDetailInput = { id: string; start?: number; limit?: number; refresh?: boolean };
 export type SearchPage = { tracks: Track[]; nextStart: number; hasMore: boolean; total?: number };
 export type HistoryPage = { tracks: Track[] };
 export type LyricSegment = { timeMs: number | null; text: string };
@@ -137,6 +147,8 @@ export type SavedQueue = {
 };
 
 export type DesktopApi = {
+  /** Dedicated main-window capability; absent in older/unsupported bridge hosts. */
+  desktopLyrics?: import('./desktop-lyrics').DesktopLyricsPublisherApi;
   updates: {
     state(): Promise<Result<UpdateState>>;
     check(): Promise<Result<UpdateState>>;
@@ -154,6 +166,8 @@ export type DesktopApi = {
   music: {
     favorites(input?: { start?: number; limit?: number; refresh?: boolean }): Promise<Result<FavoritesPage>>;
     favoritesSummary(): Promise<Result<{ total: number }>>;
+    charts(input?: { refresh?: boolean }): Promise<Result<PublicChartCatalog>>;
+    chartDetail(input: PublicChartDetailInput): Promise<Result<PublicChartDetail>>;
     playlists(input?: { refresh?: boolean }): Promise<Result<PlaylistList>>;
     playlistDetail(input: { id: string; kind: Playlist['kind']; start?: number; limit?: number; refresh?: boolean }): Promise<Result<PlaylistDetail>>;
     search(input: { query: string; start?: number; limit?: number }): Promise<Result<SearchPage>>;

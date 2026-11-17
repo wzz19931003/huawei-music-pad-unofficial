@@ -1,0 +1,11 @@
+.donation-panel { max-width: 720px; padding: 28px; color: var(--text); background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--radius-lg); }
+.donation-panel h2 { margin: 0 0 12px; font-size: 24px; }
+.donation-intro, .donation-footer { color: var(--muted); line-height: 1.8; }
+.donation-voluntary { font-weight: 600; line-height: 1.7; }
+.donation-methods { display: flex; gap: 8px; margin-top: 24px; }
+.donation-methods button { min-width: 96px; min-height: 40px; padding: 8px 18px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); color: var(--text); background: var(--surface-2); cursor: pointer; }
+.donation-methods button[aria-selected="true"] { border-color: var(--like); color: var(--like); }
+.donation-qr-panel { padding: 22px 0 4px; }
+.donation-qr-panel img { display: block; width: min(100%, 300px); max-height: 380px; object-fit: contain; image-rendering: pixelated; }
+.donation-qr-panel p { color: var(--muted); line-height: 1.7; }
+.donation-footer { margin-bottom: 0; font-size: 13px; }

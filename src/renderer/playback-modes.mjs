@@ -13,7 +13,8 @@
  *   signal?: AbortSignal, maxFavoriteSeeds?: number, maxSeedArtists?: number,
  *   maxRequests?: number, maxRecommendations?: number, maxTracksPerResponse?: number}} HeartQueueOptions
  * @typedef {{status: 'ready' | 'no-favorites' | 'no-candidates' | 'aborted',
- *   queue: Track[], recommendations: Track[], requests: number, failures: number}} HeartQueueResult
+ *   queue: Track[], recommendations: Track[], requests: number, failures: number,
+ *   discoveryCount?: number}} HeartQueueResult
  */
 
 /** @type {readonly Readonly<{id: PlayMode, label: string}>[]} */
@@ -35,9 +36,12 @@ export const HEART_LIMITS = Object.freeze({
  * Self-implemented Huawei metadata discovery, not NetEase's recommender.
  * Callbacks are existing unary loadArtist(id)/search(query), returning {tracks}.
  * Names match after trim/case/whitespace folding; artist and album IDs are opaque
- * exact matches. Only selected favorite metadata establishes a relationship.
+ * exact matches. Selected favorite metadata establishes the related lane. Up to
+ * two deduplicated favorite-title searches reserve part of the same request cap
+ * for catalog exploration outside that lane, using observed artist/album metadata.
+ * No provider personalization, genre inference, or new-release claim is involved.
  *
- * Success is strictly [favorite, new, favorite, new, ...], without duplicate IDs.
+ * Success is strictly [favorite, unsaved, favorite, unsaved, ...], without duplicate IDs.
  * Unpaired items are omitted, not padded with random favorites. Non-ready results
  * have empty queue/recommendations. requests counts attempted reads; failures
  * counts non-abort errors or malformed responses, not valid empty responses.
@@ -79,27 +83,45 @@ export async function buildHeartQueue({
   const artistNames = new Set(seeds.flatMap(item => item.artists.map(artist => normalizedName(artist.name))));
   const albumIds = new Set(seeds.map(item => item.album?.id).filter(nonempty));
   const candidates = new Map();
-  const collect = response => {
+  const discoveryIds = new Set();
+  // Conservative client mixing default, not the provider's ranking algorithm.
+  const discoveryLimit = Math.max(1, Math.floor(candidateLimit / 3));
+  const collect = (response, explore) => {
     const tracks = response?.tracks;
     if (response?.ok === false || !Array.isArray(tracks)) {
       result.failures += 1;
       return;
     }
     const scanLimit = Math.min(tracks.length, responseLimit);
-    for (let i = 0; i < scanLimit && candidates.size < candidateLimit; i += 1) {
+    for (let i = 0; i < scanLimit; i += 1) {
       const item = tracks[i];
       if (!isPlayableTrack(item) || favoriteIds.has(item.id) || candidates.has(item.id)) continue;
       const related = item.artists.some(artist => artistIds.has(artist.id) || artistNames.has(normalizedName(artist.name)))
         || (item.album && albumIds.has(item.album.id));
-      if (related) candidates.set(item.id, item);
+      const different = (artistNames.size > 0 && item.artists.length > 0)
+        || (albumIds.size > 0 && item.album);
+      const discovery = explore && !related && different;
+      if (!related && !discovery) continue;
+      if (discovery) {
+        if (discoveryIds.size >= discoveryLimit) continue;
+        // Reserve opportunity, not empty slots: retain related tracks unless an
+        // actual valid exploration result replaces one. The whole pool stays capped.
+        if (candidates.size >= candidateLimit) {
+          const replace = [...candidates.keys()].reverse().find(id => !discoveryIds.has(id));
+          if (replace === undefined) continue;
+          candidates.delete(replace);
+        }
+        discoveryIds.add(item.id);
+      } else if (candidates.size >= candidateLimit) continue;
+      candidates.set(item.id, item);
     }
   };
-  const request = async (callback, value) => {
+  const request = async (callback, value, explore) => {
     result.requests += 1;
     try {
       const response = await callWithAbort(() => callback(value), signal);
       if (signal?.aborted) throw abortError();
-      collect(response);
+      collect(response, explore);
     } catch (error) {
       if (signal?.aborted || error?.name === 'AbortError') throw abortError();
       result.failures += 1;
@@ -107,12 +129,18 @@ export async function buildHeartQueue({
   };
   const planned = new Set();
   const plan = [];
-  const add = (kind, callback, value, key = value) => {
+  const add = (kind, callback, value, key = value, explore = false) => {
     const identity = `${kind}:${key}`;
-    if (typeof callback !== 'function' || planned.has(identity) || plan.length >= requestLimit) return;
+    if (typeof callback !== 'function' || planned.has(identity) || planned.size >= requestLimit) return;
     planned.add(identity);
-    plan.push([callback, value]);
+    plan.push([callback, value, explore]);
   };
+  const explorationRequestLimit = Math.min(2, Math.ceil(requestLimit / 4));
+  for (const seed of seeds) {
+    if (plan.length >= explorationRequestLimit) break;
+    add('search', search, seed.title, normalizedName(seed.title), true);
+  }
+  const exploration = plan.splice(0);
   const seedArtists = new Map();
   for (const seed of seeds) {
     for (const artist of seed.artists) {
@@ -127,20 +155,28 @@ export async function buildHeartQueue({
   for (const seed of seeds) {
     if (seed.album) add('search', search, seed.album.title, normalizedName(seed.album.title));
   }
+  // Give an ordinary metadata read the first turn, then the reserved title reads.
+  // A full related pool cannot suppress them; there is no recursive catalog crawl.
+  plan.splice(Math.min(1, plan.length), 0, ...exploration);
   try {
-    for (const [callback, value] of plan) {
+    for (const [callback, value, explore] of plan) {
       if (signal?.aborted) throw abortError();
-      if (candidates.size >= candidateLimit) break;
-      await request(callback, value);
+      if (candidates.size >= candidateLimit && (!explore || discoveryIds.size >= discoveryLimit)) continue;
+      await request(callback, value, explore);
     }
     if (signal?.aborted) throw abortError();
   } catch (error) {
     if (error?.name !== 'AbortError') throw error;
     return { ...result, status: 'aborted', queue: [], recommendations: [] };
   }
-  result.recommendations = [...candidates.values()];
+  const related = [...candidates.values()].filter(item => !discoveryIds.has(item.id));
+  const discoveries = [...candidates.values()].filter(item => discoveryIds.has(item.id));
+  while (related.length || discoveries.length) {
+    result.recommendations.push(...related.splice(0, 2), ...discoveries.splice(0, 1));
+  }
   if (result.recommendations.length === 0) return result;
   result.status = 'ready';
+  if (discoveryIds.size) result.discoveryCount = discoveryIds.size;
   result.queue = result.recommendations.flatMap((candidate, i) => [seeds[i], candidate]);
   return result;
 }

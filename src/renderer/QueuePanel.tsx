@@ -68,6 +68,8 @@ export function QueuePanel({
   const upcoming = player.queue.slice(player.index + 1);
   const played = player.index > 0 ? player.queue.slice(0, player.index) : [];
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const originRef = useRef<HTMLElement | null>(null);
 
   // 抽屉有开有合：开着时留在树上，收起动画放完再卸载。
   // 开合都走 CSS 动画（keyframes 自带起手帧），不依赖 rAF——
@@ -90,10 +92,18 @@ export function QueuePanel({
     return () => clearTimeout(timer);
   }, [open, mounted]);
 
-  // 每次打开都从「正在播放」看起，别停在上次的位置。
+  // Non-modal desktop drawer: enter its controls and return focus on dismissal.
   useEffect(() => {
+    if (!open || !mounted) return;
+    originRef.current = document.activeElement as HTMLElement | null;
     scrollRef.current?.scrollTo({ top: 0 });
-  }, []);
+    closeButtonRef.current?.focus();
+  }, [open, mounted]);
+
+  const dismiss = () => {
+    onClose();
+    if (originRef.current?.isConnected) originRef.current.focus();
+  };
 
   if (!mounted) return null;
 
@@ -102,6 +112,11 @@ export function QueuePanel({
       className={`queue-panel ${closing ? 'is-closing' : 'is-open'}`}
       aria-label="播放队列"
       aria-hidden={closing}
+      inert={closing || !open}
+      onKeyDown={event => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault(); event.stopPropagation(); dismiss();
+      }}
     >
       <header className="queue-head">
         <div className="queue-head-text">
@@ -118,7 +133,7 @@ export function QueuePanel({
           >
             清空待播
           </button>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="关闭队列" title="关闭队列">
+          <button type="button" className="icon-button" ref={closeButtonRef} onClick={dismiss} aria-label="关闭队列" title="关闭队列">
             <X size={16} />
           </button>
         </div>
@@ -131,7 +146,7 @@ export function QueuePanel({
           <>
             <section className="queue-section">
               <h3 className="queue-section-title">正在播放</h3>
-              <QueueTrack track={current} order={player.index + 1} active playing={player.playing} onJump={() => undefined} />
+              <QueueTrack track={current} order={player.index + 1} active playing={player.playing} onJump={() => undefined} onRemove={() => player.removeAt(player.index)} />
             </section>
 
             <section className="queue-section">
@@ -161,7 +176,7 @@ export function QueuePanel({
                   <span className="queue-section-count">{played.length}</span>
                 </h3>
                 {played.map((track, i) => (
-                  <QueueTrack key={`${track.id}-${i}`} track={track} order={i + 1} dim onJump={() => player.jumpTo(i)} />
+                  <QueueTrack key={`${track.id}-${i}`} track={track} order={i + 1} dim onJump={() => player.jumpTo(i)} onRemove={() => player.removeAt(i)} />
                 ))}
               </section>
             ) : null}
@@ -172,7 +187,7 @@ export function QueuePanel({
   );
 }
 
-export type MenuTarget = { track: Track; x: number; y: number };
+export type MenuTarget = { track: Track; x: number; y: number; returnFocus?: HTMLElement };
 
 /** 列表里右键歌曲弹出的动作菜单：立即播放 / 下一首播放 / 添加到播放队列。 */
 export function TrackMenu({
@@ -192,10 +207,20 @@ export function TrackMenu({
   onRemove?: () => void;
   inQueue?: boolean;
 }) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const originRef = useRef(target.returnFocus ?? document.activeElement as HTMLElement | null);
+  if (target.returnFocus) originRef.current = target.returnFocus;
+  const dismiss = (restore = false) => {
+    closeRef.current();
+    if (restore && originRef.current?.isConnected) originRef.current.focus();
+  };
   useEffect(() => {
-    const close = () => onClose();
+    menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')[0]?.focus();
+    const close = () => dismiss();
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape' && !event.defaultPrevented) dismiss(true);
     };
     window.addEventListener('click', close);
     window.addEventListener('resize', close);
@@ -205,41 +230,57 @@ export function TrackMenu({
       window.removeEventListener('resize', close);
       window.removeEventListener('keydown', onKey);
     };
-  }, [onClose]);
+  }, [target.track.id, target.x, target.y]);
 
   const width = 208;
   const height = inQueue ? 176 : 140;
-  const left = Math.min(target.x, window.innerWidth - width - 12);
-  const top = Math.min(target.y, window.innerHeight - height - 12);
+  const left = Math.max(12, Math.min(target.x, window.innerWidth - width - 12));
+  const top = Math.max(12, Math.min(target.y, window.innerHeight - height - 12));
 
   const run = (action: () => void) => (event: React.MouseEvent) => {
     event.stopPropagation();
     action();
-    onClose();
+    dismiss(true);
   };
 
   return (
     <div
       className="track-menu"
+      ref={menuRef}
       style={{ left, top, width }}
       onClick={event => event.stopPropagation()}
       onContextMenu={event => event.preventDefault()}
       role="menu"
+      aria-label={`歌曲操作：${target.track.title}`}
+      onKeyDown={event => {
+        if (event.key === 'Escape') {
+          event.preventDefault(); event.stopPropagation(); dismiss(true); return;
+        }
+        if (event.key === 'Tab') { dismiss(); return; }
+        if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+        event.preventDefault(); event.stopPropagation();
+        const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+        const at = items.indexOf(document.activeElement as HTMLButtonElement);
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+          : at < 0 ? event.key === 'ArrowUp' ? items.length - 1 : 0
+          : (at + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+        items[next]?.focus();
+      }}
     >
-      <button type="button" className="track-menu-item" onClick={run(onPlayNow)} role="menuitem">
+      <button type="button" className="track-menu-item" onClick={run(onPlayNow)} role="menuitem" tabIndex={-1}>
         <Play size={14} fill="currentColor" />
         立即播放
       </button>
-      <button type="button" className="track-menu-item" onClick={run(onPlayNext)} role="menuitem">
+      <button type="button" className="track-menu-item" onClick={run(onPlayNext)} role="menuitem" tabIndex={-1}>
         <ListStart size={14} />
         下一首播放
       </button>
-      <button type="button" className="track-menu-item" onClick={run(onAddToQueue)} role="menuitem">
+      <button type="button" className="track-menu-item" onClick={run(onAddToQueue)} role="menuitem" tabIndex={-1}>
         <ListPlus size={14} />
         添加到播放队列
       </button>
       {inQueue && onRemove ? (
-        <button type="button" className="track-menu-item is-danger" onClick={run(onRemove)} role="menuitem">
+        <button type="button" className="track-menu-item is-danger" onClick={run(onRemove)} role="menuitem" tabIndex={-1}>
           <Trash2 size={14} />
           从队列移除
         </button>

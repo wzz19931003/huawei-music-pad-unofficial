@@ -3,6 +3,8 @@ import { session as electronSession, WebContentsView } from 'electron';
 import { electronBypassRules, proxyRules, readProxySettings } from './proxy.mjs';
 import { createAttempt, exchangeCode, exchangeMusicSession, isAllowedLoginUrl, isCallback } from '../auth.mjs';
 import { MusicClient } from '../music.mjs';
+import { createPublicCharts } from '../public-charts.mjs';
+
 import { isSafeMediaUrl } from '../safe-media-url.mjs';
 import { playbackQualityEvidence } from './track-quality.mjs';
 import { probeMediaQuality } from './media-quality-probe.mjs';
@@ -28,6 +30,15 @@ const number = (value: unknown) => {
 const PAGE_LIMIT = 50;
 const DISCOVERY_PAGE_LIMIT = 200;
 const DISCOVERY_PAGE_CAP = 10;
+
+// Separate fixed-origin anonymous metadata capability; account/playback routing is unchanged.
+export function createPublicChartService() {
+  return createPublicCharts() as {
+    catalog(input?: { refresh?: boolean }): Promise<import('../shared/types').PublicChartCatalog>;
+    detail(input: import('../shared/types').PublicChartDetailInput): Promise<import('../shared/types').PublicChartDetail>;
+    invalidate(): void;
+  };
+}
 
 export function tracksFromFavorites(response: any): Track[] {
   return tracksFrom(response?.favoriteInfos) as Track[];

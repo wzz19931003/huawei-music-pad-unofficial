@@ -1,6 +1,36 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { toUpdateView } from '../src/main/update-view.mjs';
+import { normalizeReleaseNotes } from '../src/main/update-release-notes.mjs';
+
+test('view projects only bounded note DTOs for a live candidate, while older states remain compatible', () => {
+  const base = { status: 'available', currentVersion: '1.0.0', version: '1.1.0', progress: null, errorCode: null };
+  const notes = normalizeReleaseNotes('新增：队列筛选', '1.1.0', '1.0.0');
+  const valid = toUpdateView({ ...base, ...notes });
+  assert.deepEqual(valid.releaseNotes, notes.releaseNotes);
+  assert.notEqual(valid.releaseNotes, notes.releaseNotes, 'projection must copy the whitelist, not forward objects');
+  const older = toUpdateView(base);
+  assert.deepEqual(older.releaseNotes, []);
+  assert.equal(older.releaseNotesTruncated, false);
+  for (const status of ['idle', 'checking', 'development', 'unconfigured']) {
+    assert.deepEqual(toUpdateView({ ...base, ...notes, status }).releaseNotes, []);
+  }
+  assert.deepEqual(toUpdateView({ ...base, ...notes, status: 'error', errorCode: 'UPDATE_CHECK_FAILED' }).releaseNotes, []);
+  assert.deepEqual(toUpdateView({ ...base, ...notes, version: '1.0.1' }).releaseNotes, []);
+  assert.deepEqual(toUpdateView({ ...base, ...notes, currentVersion: '1.1.0' }).releaseNotes, []);
+  let reads = 0;
+  const accessor = { version: '1.1.0', get sections() { reads += 1; throw new Error('must not run'); } };
+  for (const releaseNotes of [null, 'legacy raw string', [accessor], [{ version: 'v1.1.0', sections: [] }],
+    [{ version: '1.1.0', sections: [{ kind: 'text', items: ['<img src="https://tracker.invalid/">'] }] }],
+    [{ version: '1.1.0', sections: [{ kind: 'text', items: ['x'.repeat(281)] }] }],
+    [{ version: '1.1.0', sections: [{ kind: 'invented', items: ['不得造分类'] }] }],
+  ]) {
+    const result = toUpdateView({ ...base, releaseNotes, releaseNotesTruncated: true });
+    assert.deepEqual(result.releaseNotes, []);
+    assert.equal(result.releaseNotesTruncated, false);
+  }
+  assert.equal(reads, 0);
+});
 
 test('update presentation distinguishes unchecked from a completed no-update check', () => {
   const state = { status: 'idle', currentVersion: '0.1.1', version: null, progress: null, errorCode: null };

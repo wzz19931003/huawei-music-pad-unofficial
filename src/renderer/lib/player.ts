@@ -85,6 +85,9 @@ export function usePlayer({ quality, volume, accountKey, onError, onVolumeCommit
   const shuffleHistory = useRef<number[]>([]);
   const shuffleState = useRef<ReturnType<typeof nextPlaybackStep>['shuffleState']>(null);
   const loadToken = useRef(0);
+  // A pending request may leave the old source playing. Bind secondary views to
+  // the load token actually assigned to this one Audio, not the latest request.
+  const audioSource = useRef<{ generation: number; trackId: string | null }>({ generation: 0, trackId: null });
   const onErrorRef = useRef(onError);
   const onPreferencesRef = useRef(onPreferencesChange);
   const nextRef = useRef<(auto?: boolean) => void>(() => undefined);
@@ -205,6 +208,7 @@ export function usePlayer({ quality, volume, accountKey, onError, onVolumeCommit
         audio.pause();
         audio.src = '';
       }
+      audioSource.current = { ...audioSource.current, trackId: null };
       setPlaying(false);
       return;
     }
@@ -333,6 +337,7 @@ export function usePlayer({ quality, volume, accountKey, onError, onVolumeCommit
       element.removeEventListener('error', onFailed);
       element.pause();
       element.src = '';
+      audioSource.current = { ...audioSource.current, trackId: null };
       audioRef.current = null;
     };
     // 只在挂载时初始化，音量由下面的 effect 同步。
@@ -368,6 +373,7 @@ export function usePlayer({ quality, volume, accountKey, onError, onVolumeCommit
         const { codec, qualityEvidence, sampleRateHz, bitDepth, channels, contentType } = playback;
         setPlaybackDetails({ codec, qualityEvidence, sampleRateHz, bitDepth, channels, contentType });
         audio.src = playback.url;
+        audioSource.current = { generation: token, trackId: track.id };
 
         if (pending) {
           // 恢复上次进度：必须等元数据到了再改 currentTime，否则会被当成 0 丢掉。
@@ -472,7 +478,7 @@ export function usePlayer({ quality, volume, accountKey, onError, onVolumeCommit
       const account = accountRef.current;
       const active = () => heartJob.current === controller && !controller.signal.aborted && accountRef.current === account;
       setHeartStatus('loading');
-      setHeartMessage('正在读取收藏并查找相关新歌…');
+      setHeartMessage('正在读取收藏，进行客户端元数据关联与探索…');
       try {
         const favorites = await heartFavorites(controller.signal);
         if (!active()) return false;
@@ -489,12 +495,14 @@ export function usePlayer({ quality, volume, accountKey, onError, onVolumeCommit
         if (result.status !== 'ready') {
           setHeartStatus(result.status === 'aborted' ? 'cancelled' : result.status);
           setHeartMessage(result.status === 'aborted' ? '心动模式读取已取消，保留原播放模式与队列。'
-            : result.status === 'no-favorites' ? '没有可播放的收藏，未切换心动模式。' : '没有找到相关的新歌，未切换心动模式。');
+            : result.status === 'no-favorites' ? '没有可播放的收藏，未切换心动模式。' : '客户端关联与探索未找到可用的未收藏曲目，已保留原播放模式与队列。');
           return false;
         }
         playFrom(result.queue, 0);
         setHeartStatus('ready');
-        setHeartMessage('心动模式：收藏与相关新歌交替播放（基于收藏元数据，非官方推荐）。');
+        setHeartMessage(result.discoveryCount
+          ? `心动模式：收藏与未收藏曲目交替播放（客户端元数据关联与探索，含 ${result.discoveryCount} 首探索曲目，非官方推荐）。`
+          : '心动模式：收藏与关联曲目交替播放（本轮未找到收藏歌手或专辑外的可用探索结果；客户端关联，非官方推荐）。');
       } catch {
         if (!active()) return false;
         heartJob.current = null;
@@ -521,6 +529,24 @@ export function usePlayer({ quality, volume, accountKey, onError, onVolumeCommit
     resetTraversal();
     modeRef.current = normalizePlayMode(next);
     setModeState(modeRef.current);
+  }, []);
+
+  // Read-only clock for synchronized secondary views. Never creates another Audio
+  // and never returns a media URL, account/session data or cached React progress.
+  const readClock = useCallback(() => {
+    const audio = audioRef.current;
+    const position = audio?.currentTime;
+    const length = audio?.duration;
+    const rate = audio?.playbackRate;
+    return {
+      generation: audioSource.current.generation,
+      trackId: audioSource.current.trackId,
+      positionSeconds: typeof position === 'number' && Number.isFinite(position) ? Math.max(0, position) : 0,
+      durationSeconds: typeof length === 'number' && Number.isFinite(length) ? Math.max(0, length) : 0,
+      playing: Boolean(audio && !audio.paused && !audio.ended && !audio.seeking && audio.readyState >= 3),
+      playbackRate: typeof rate === 'number' && Number.isFinite(rate) && rate > 0 ? rate : 1,
+      sampledAtMs: Date.now(),
+    };
   }, []);
 
   return {
@@ -560,5 +586,6 @@ export function usePlayer({ quality, volume, accountKey, onError, onVolumeCommit
     cancelHeart,
     setPreferences,
     positionCommit,
+    readClock,
   };
 }

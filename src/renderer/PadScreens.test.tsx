@@ -17,10 +17,10 @@ function props(overrides: Partial<PadScreenProps> = {}): PadScreenProps {
   return {
     authenticated: false, favorites: [], history: [], playlists: [], total: 0,
     loading: false, playing: false,
-    onPlay: vi.fn(), onOpenFavorites: vi.fn(), onOpenPlaylist: vi.fn(),
-    onOpenPlaylists: vi.fn(), onSearch: vi.fn(), onOpenSettings: vi.fn(), onCheckUpdates: vi.fn(), onOpenAbout: vi.fn(),
+    onPlay: vi.fn(), onResume: vi.fn(), onOpenFavorites: vi.fn(), onOpenPlaylist: vi.fn(),
+    onOpenPlaylists: vi.fn(), onOpenCharts: vi.fn(), onSearch: vi.fn(), onOpenSettings: vi.fn(), onCheckUpdates: vi.fn(), onOpenAbout: vi.fn(),
     onLogin: vi.fn(), onNotice: vi.fn(), onOpenHistory: vi.fn(),
-    onToggleFavorite: vi.fn(), onTrackMenu: vi.fn(), ...overrides,
+    onToggleFavorite: vi.fn(), onTrackMenu: vi.fn(), onSelectHeart: vi.fn(), onCancelHeart: vi.fn(), ...overrides,
   };
 }
 
@@ -68,12 +68,39 @@ const current = { id: 'two', title: '当前歌曲', artists: [{ name: '乙歌手
 const blocked = { id: 'no-play', title: '不可播放歌曲', artists: [{ name: '丙歌手' }], available: false };
 
 describe('Pad home', () => {
-  it('keeps the four reference cards when signed out and routes collection entry to login', async () => {
+  it('opens public featured charts without login from the real homepage control', async () => {
+    const Home = await loadScreen('PadHomeScreen');
+    const input = { ...props(), onOpenCharts: vi.fn() };
+    const tree = Home(input);
+    control(tree, '排行榜').onClick();
+    expect(input.onOpenCharts).toHaveBeenCalledOnce();
+    expect(input.onLogin).not.toHaveBeenCalled();
+    expect(control(tree, '排行榜')['aria-disabled']).toBeUndefined();
+  });
+  it('delegates heart to actual mode selection, with login gating and pending cancellation', async () => {
+    const Home = await loadScreen('PadHomeScreen');
+    const input = props({ authenticated: true });
+    control(Home(input), '心动模式').onClick();
+    expect(input.onSelectHeart).toHaveBeenCalledOnce();
+    expect(input.onPlay).not.toHaveBeenCalled();
+    const pending = props({ authenticated: true, heartPending: true });
+    control(Home(pending), '停止等待心动模式').onClick();
+    expect(pending.onCancelHeart).toHaveBeenCalledOnce();
+    expect(pending.onSelectHeart).not.toHaveBeenCalled();
+    const signedOut = props();
+    control(Home(signedOut), '心动模式').onClick();
+    expect(signedOut.onLogin).toHaveBeenCalledOnce();
+    expect(signedOut.onSelectHeart).not.toHaveBeenCalled();
+  });
+  it('keeps the requested five desktop entries in exact order without recent-favorite duplicates', async () => {
     const Home = await loadScreen('PadHomeScreen');
     const input = props();
     const tree = Home(input);
     const markup = renderToStaticMarkup(tree);
-    expect(elements(tree).filter(node => node.type === 'button' && String(node.props.className).includes('pad-feature-card'))).toHaveLength(4);
+    const cards = elements(tree).filter(node => node.type === 'button' && String(node.props.className).includes('pad-feature-card'));
+    expect(cards.map(card => elements(card.props.children).find(node => node.type === 'strong')?.props.children))
+      .toEqual(['继续播放', '每日30首', '新歌推荐', '心动模式', '我的收藏']);
+    expect(markup).not.toContain('最近收藏');
     expect(markup).toContain('每日30首');
     expect(markup).toContain('未接入');
     expect(markup).not.toContain('<h1');
@@ -84,12 +111,13 @@ describe('Pad home', () => {
 
   it('continues the actual current track instead of playing index zero', async () => {
     const Home = await loadScreen('PadHomeScreen');
-    const input = props({ authenticated: true, history: [first, current], favorites: [current], currentId: 'two', playing: true, total: 81 });
+    const input = props({ authenticated: true, history: [first, current], favorites: [current], resumeTrack: current, currentId: 'two', playing: true, total: 81 });
     const tree = Home(input);
     expect(renderToStaticMarkup(tree)).toContain('当前歌曲');
     expect(renderToStaticMarkup(tree)).toContain('81 首');
-    control(tree, '继续最近播放').onClick();
-    expect(input.onPlay).toHaveBeenCalledExactlyOnceWith([first, current], 1);
+    control(tree, '继续播放').onClick();
+    expect(input.onResume).toHaveBeenCalledOnce();
+    expect(input.onPlay).not.toHaveBeenCalled();
     control(tree, '打开我的收藏').onClick();
     expect(input.onOpenFavorites).toHaveBeenCalledOnce();
     expect(input.onLogin).not.toHaveBeenCalled();
@@ -117,15 +145,17 @@ describe('Pad home', () => {
     const Home = await loadScreen('PadHomeScreen');
     const input = props({ authenticated: true, history: [blocked], favorites: [blocked] });
     const tree = Home(input);
-    control(tree, '继续最近播放').onClick();
-    control(tree, '查看最近收藏').onClick();
+    control(tree, '继续播放').onClick();
+    expect(input.onResume).toHaveBeenCalledOnce();
+
     const song = control(tree, '播放：不可播放歌曲');
     expect(song['aria-disabled']).toBe(true);
     song.onClick();
     control(tree, '每日30首，未接入').onClick();
-    control(tree, '排行榜，未接入').onClick();
+    control(tree, '新歌推荐，未接入').onClick();
+    control(tree, '分类，未接入').onClick();
     expect(input.onPlay).not.toHaveBeenCalled();
-    expect(input.onNotice).toHaveBeenCalledTimes(5);
+    expect(input.onNotice).toHaveBeenCalledTimes(4);
     expect(renderToStaticMarkup(tree)).toContain('暂不可播放');
   });
 });

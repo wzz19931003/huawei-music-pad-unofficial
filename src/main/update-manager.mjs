@@ -1,11 +1,14 @@
 import { compareUpdateVersions, parseUpdateVersion, validateUpdateSource } from './update-policy.mjs';
+import { EMPTY_RELEASE_NOTES, normalizeReleaseNotes } from './update-release-notes.mjs';
 
 /**
  * @typedef {'unconfigured' | 'development' | 'idle' | 'checking' | 'available' |
  *   'downloading' | 'downloaded' | 'installing' | 'error'} UpdateStatus
  * @typedef {Readonly<{status: UpdateStatus, currentVersion: string | null,
  *   version: string | null, progress: number | null,
- *   message: string, errorCode: UpdateErrorCode | null}>} UpdateState
+ *   message: string, errorCode: UpdateErrorCode | null,
+ *   releaseNotes: NonNullable<import('../shared/types').UpdateState['releaseNotes']>,
+ *   releaseNotesTruncated: boolean}>} UpdateState
  * @typedef {keyof typeof errors} UpdateErrorCode
  * @typedef {(...args: any[]) => void} UpdateListener
  * @typedef {{autoDownload: boolean, autoInstallOnAppQuit: boolean, allowDowngrade: boolean,
@@ -79,10 +82,15 @@ function publicError(code) {
  * - dispose() is idempotent: detach only owned listeners, settle pending actions
  *   with the last snapshot and ignore late promises. It does not cancel I/O or
  *   restore auto-install flags. Do not reuse the transport after disposal.
- * - Every snapshot has all six fields. version/progress use null when absent;
+ * - Every snapshot has all eight fields. version/progress use null when absent;
  *   currentVersion is null only for invalid installed metadata. For an optional-
  *   field renderer type, map null version/progress to undefined and map null
  *   currentVersion to a fixed display string (e.g. 'unknown'). Progress is percent.
+ *   releaseNotes contains only bounded, frozen pure-text entries in the installed-
+ *   to-candidate version range. Candidate changes/check failures clear old notes;
+ *   progress, download retries and verified-install recovery keep their notes.
+ *   Missing notes never block an otherwise valid update. A downloaded event may
+ *   fill missing notes but cannot overwrite the already displayed release text.
  *
  * @param {{updater?: UpdaterTransport | null, currentVersion: unknown, packaged: boolean,
  *   source?: unknown, onState?: (state: UpdateState) => void}} options
@@ -129,7 +137,8 @@ export function createUpdateManager({ updater, currentVersion, packaged, source,
   const disabledCode = errorCode;
   /** @type {UpdateState} */
   let state = Object.freeze({ status, currentVersion: version, version: null, progress: null,
-    message: errors[errorCode] ?? messages[status], errorCode });
+    message: errors[errorCode] ?? messages[status], errorCode,
+    releaseNotes: EMPTY_RELEASE_NOTES, releaseNotesTruncated: false });
   let active = null;
   let candidate = null;
   let verified = null;
@@ -148,7 +157,9 @@ export function createUpdateManager({ updater, currentVersion, packaged, source,
   }
   function transition(next, fields = {}) {
     if (disposed) return;
+    const notesChanged = Object.hasOwn(fields, 'version') && fields.version !== state.version;
     state = Object.freeze({ ...state, status: next, progress: null, errorCode: null,
+      ...(notesChanged ? { releaseNotes: EMPTY_RELEASE_NOTES, releaseNotesTruncated: false } : {}),
       message: messages[next], ...fields });
     notify();
   }
@@ -170,7 +181,7 @@ export function createUpdateManager({ updater, currentVersion, packaged, source,
       if (compareUpdateVersions(offered, version) !== 1) return fail('UPDATE_VERSION_REJECTED');
       candidate = offered;
       active.outcome = 'available';
-      transition('available', { version: offered });
+      transition('available', { version: offered, ...normalizeReleaseNotes(info?.releaseNotes, offered, version) });
     },
     'update-not-available': () => {
       if (!listening('check')) return;
@@ -188,7 +199,8 @@ export function createUpdateManager({ updater, currentVersion, packaged, source,
       if (downloaded !== candidate || compareUpdateVersions(downloaded, version) !== 1) return fail('UPDATE_VERSION_REJECTED');
       verified = downloaded;
       active.outcome = 'downloaded';
-      transition('downloaded', { progress: 100 });
+      transition('downloaded', { progress: 100,
+        ...(state.releaseNotes.length ? {} : normalizeReleaseNotes(info?.releaseNotes, downloaded, version)) });
     },
     error: () => {
       if (disposed || (active && !active.started) || active?.outcome === 'error') return;

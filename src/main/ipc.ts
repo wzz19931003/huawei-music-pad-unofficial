@@ -6,7 +6,8 @@ import { listSystemFonts } from './system-fonts';
 import { clearLyricsCache, lyricsCacheInfo, readLyricsFile, removeLocalLyrics, writeLocalLyrics } from './lyrics-cache';
 import { parseLyrics } from '../lyrics.mjs';
 import { fail, ok } from '../shared/result';
-import type { LyricsDoc, SavedQueue, UpdateState } from '../shared/types';
+import { PublicChartError, validateChartCatalogInput, validateChartDetailInput } from '../public-charts.mjs';
+import type { LyricsDoc, Result, SavedQueue, UpdateState } from '../shared/types';
 
 export function registerIpc(
   window: BrowserWindow,
@@ -47,6 +48,25 @@ export function registerIpc(
     }
     if (input.refresh !== undefined && (typeof input.refresh !== 'boolean' || (input.refresh && start !== 0))) throw new Error('收藏刷新参数无效');
     return auth.getFavorites(start, limit, input.refresh ?? false);
+  });
+  const chartInput = <T>(read: () => T): Result<T> => {
+    try { return ok(read()); }
+    catch (error) {
+      if (error instanceof PublicChartError) return fail({ kind: error.kind, message: error.message, retryable: error.retryable, code: error.code });
+      return fail({ kind: 'invalid', message: '公开榜单参数无效', retryable: false });
+    }
+  };
+  ipcMain.handle(channels.musicCharts, async (event, input: unknown = {}) => {
+    guard(event);
+    const parsed = chartInput(() => validateChartCatalogInput(input));
+    if (!parsed.ok) return parsed;
+    return auth.getPublicCharts(parsed.data);
+  });
+  ipcMain.handle(channels.musicChartDetail, async (event, input: unknown) => {
+    guard(event);
+    const parsed = chartInput(() => validateChartDetailInput(input));
+    if (!parsed.ok) return parsed;
+    return auth.getPublicChartDetail(parsed.data);
   });
   ipcMain.handle(channels.musicFavoritesSummary, async event => { guard(event); return auth.getFavoritesSummary(); });
   const refreshFlag = (value: unknown) => value === undefined || typeof value === 'boolean';

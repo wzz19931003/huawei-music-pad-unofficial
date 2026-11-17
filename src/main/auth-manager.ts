@@ -6,9 +6,12 @@ import { createWriteController } from './writes.mjs';
 import { createFavoritesCatalog } from './favorites-catalog.mjs';
 import { createMemoryCache } from './memory-cache.mjs';
 import { sessionSaveOutcome } from './session-transition.mjs';
+
+import { PublicChartError } from '../public-charts.mjs';
+import type { PublicChartCatalog, PublicChartDetail, PublicChartDetailInput } from '../shared/types';
 import { createSessionEpoch } from './session-epoch.mjs';
 import {
-  album, artist, createPlaylist, createRecentPlay, deletePlaylist, favoriteExist, favorites, favoritesPage, history,
+  album, artist, createPlaylist, createPublicChartService, createRecentPlay, deletePlaylist, favoriteExist, favorites, favoritesPage, history,
   lyrics, openLogin, playlistDetail, playlists, resolvePlayback, search, setFavorite, updatePlaylistDescription,
 } from './huawei';
 import { thirdPartyLyrics } from './lyrics-fallback';
@@ -32,6 +35,25 @@ export class AuthManager {
   private writer: ReturnType<typeof createWriteController> | null = null;
   private catalog: ReturnType<typeof createFavoritesCatalog> | null = null;
   private readonly memory = createMemoryCache({ ttlMs: PLAYLIST_CACHE_TTL_MS });
+  private readonly publicCharts = createPublicChartService();
+  async getPublicCharts(input: { refresh?: boolean } = {}): Promise<Result<PublicChartCatalog>> {
+    return this.#publicRead(() => this.publicCharts.catalog(input));
+  }
+  async getPublicChartDetail(input: PublicChartDetailInput): Promise<Result<PublicChartDetail>> {
+    return this.#publicRead(() => this.publicCharts.detail(input));
+  }
+  async #publicRead<T>(read: () => Promise<T>): Promise<Result<T>> {
+    if (this.sessionEpoch.isTransitioning()) return fail({ kind: 'auth', message: '账号正在切换，请稍后读取榜单。', retryable: true });
+    const epoch = this.sessionEpoch.capture();
+    try {
+      const data = await read();
+      if (!this.sessionEpoch.isCurrent(epoch)) return fail({ kind: 'auth', message: '账号状态已更改，请重新读取榜单。', retryable: true });
+      return ok(data);
+    } catch (error) {
+      return fail(error instanceof PublicChartError ? { kind: error.kind, message: error.message, retryable: error.retryable, code: error.code }
+        : { kind: 'network', message: '公开榜单读取失败，请重试。', retryable: true });
+    }
+  }
   private cancelLoginRef: (() => void) | null = null;
   constructor(private readonly progress: (message: string) => void,
     private readonly clearRendererData: () => Promise<void> = async () => undefined,
@@ -61,6 +83,7 @@ export class AuthManager {
       await favorites(candidate);
       const previous = this.session;
       this.sessionEpoch.beginTransition();
+      this.publicCharts.invalidate();
       this.catalog?.invalidate();
       try {
         await clearPersonalData();
@@ -93,6 +116,7 @@ export class AuthManager {
     if (this.writer?.busy) return fail({ kind: 'unknown', message: '账号写操作正在核对，请稍后退出。', retryable: true });
     if (this.sessionEpoch.isTransitioning()) return fail({ kind: 'unknown', message: '退出登录正在进行。', retryable: true });
     this.sessionEpoch.beginTransition();
+    this.publicCharts.invalidate();
     this.catalog?.invalidate();
     try {
       await clearPersonalData();

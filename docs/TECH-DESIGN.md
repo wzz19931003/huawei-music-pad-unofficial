@@ -199,7 +199,7 @@ scale 1.00 → 0.82，最多算 8 行），当前行白色加粗，形成前后�
 - 标题栏与侧栏品牌区用 `-webkit-app-region: drag` 拖拽；搜索框、导航、窗口按钮显式 `no-drag`，否则点不到。
 - 标题栏高 52px，内容垂直居中（上下各 11px 留白），窗口按钮 42×30 圆角内缩、不再贴顶贴边，悬停底色不会压到窗口圆角。
 - 最小化/最大化/关闭走 IPC：`window:minimize` `window:toggle-maximize` `window:close`；最大化状态由主进程 `maximize`/`unmaximize` 事件推回渲染层（`window:maximized-changed`），按钮图标随之切换。
-- 应用图标：`build/icon-src.png`（用户提供的官方图标）→ `scripts/make-icon.mjs` → `build/icon.png`(512) / `build/icon.ico`(16–256) / `build/tray.png` / `src/renderer/assets/app-icon.png`。主进程窗口图标、`build.win.icon`、侧栏品牌、启动页都取这一份。
+- 应用图标：当前 `build/icon-src.png` 为用户确认的 Wmusic「05 造型＋03 配色」AI 编辑原图，非厂商官方标志；经 `scripts/icon-preparation.mjs` 去除外围展示画布，再由 `scripts/make-icon.mjs` 导出 PNG / 多尺寸 ICO / 托盘与 renderer 图片。窗口 512px 与托盘 32px PNG 同时内嵌到 `src/main/icons.ts`，避免打包后依赖源码目录。它是栅格图标管线，不宣称已矢量化；当前来源声明见 `build/icon.LICENSE.txt` 与 NOTICE 第七节。
 
 ### 4.2 大屏/全屏布局规则
 

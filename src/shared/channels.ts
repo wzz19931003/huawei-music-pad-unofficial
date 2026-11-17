@@ -10,6 +10,8 @@ export const channels = {
   authCancelLogin: 'auth:cancel-login',
   musicFavorites: 'music:favorites',
   musicFavoritesSummary: 'music:favorites-summary',
+  musicCharts: 'music:charts',
+  musicChartDetail: 'music:chart-detail',
   musicPlaylists: 'music:playlists',
   musicPlaylistDetail: 'music:playlist-detail',
   musicSearch: 'music:search',

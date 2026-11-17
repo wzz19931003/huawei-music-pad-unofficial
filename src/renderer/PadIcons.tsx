@@ -1,4 +1,5 @@
 import React, { forwardRef, type CSSProperties, type ReactNode, type SVGProps } from 'react';
+import { getDesktopGlyph } from './DesktopGlyphs';
 
 /**
  * Hand-redrawn application-internal glyphs, never app/tray identity assets.
@@ -10,33 +11,35 @@ import React, { forwardRef, type CSSProperties, type ReactNode, type SVGProps } 
  * Other combinations fall back to the screenshot-locked default glyph.
  */
 export type PadIconVariant = 'default' | 'plain' | 'badge' | 'sleeve' | 'tile';
-export type PadIconProps = SVGProps<SVGSVGElement> & { size?: number | string; variant?: PadIconVariant };
+export type PadIconProps = SVGProps<SVGSVGElement> & { size?: number | string; variant?: PadIconVariant; selected?: boolean };
 
 function icon(name: string, source: 'screenshot' | 'original', drawing: ReactNode, weight = 1.7,
   variants: Partial<Record<PadIconVariant, ReactNode>> = {}) {
   const PadIcon = forwardRef<SVGSVGElement, PadIconProps>(function PadIcon(
-    { size = 24, strokeWidth = weight, variant = 'default', className, style, fill, children, ...props }, ref,
+    { size = 24, strokeWidth, variant = 'default', selected, className, style, fill, children, ...props }, ref,
   ) {
     const named = Boolean(props['aria-label'] || props['aria-labelledby']);
     const resolvedVariant = Object.hasOwn(variants, variant) ? variant : 'default';
     // Explicit fill also paints intrinsically solid compound silhouettes; their
     // transparent holes stay transparent on arbitrary glass/background colors.
     const solid = style?.fill ?? fill;
+    const geometry = getDesktopGlyph(name, resolvedVariant, selected, solid);
     const iconStyle = solid === undefined ? style : { '--pad-icon-fill': solid, ...style } as CSSProperties;
-    return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24"
-      fill={fill ?? 'none'} stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round"
+    return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox={geometry ? '0 0 32 32' : '0 0 24 24'}
+      fill={fill ?? 'none'} stroke="currentColor" strokeWidth={strokeWidth ?? geometry?.weight ?? weight} strokeLinecap="round" strokeLinejoin="round"
       aria-hidden={props['aria-hidden'] ?? !named} role={named ? 'img' : undefined} focusable="false"
-      data-pad-icon={name} data-icon-source={source} data-icon-variant={resolvedVariant} {...props} ref={ref}
+      data-pad-icon={name} data-icon-source={geometry?.source ?? source} data-icon-variant={resolvedVariant}
+      data-control-glyph={geometry?.key} data-icon-reference-kind={geometry?.reference} {...props} ref={ref}
       className={className ? `pad-icon ${className}` : 'pad-icon'} style={iconStyle}>
-      {children}{variants[resolvedVariant] ?? drawing}
+      {children}{geometry?.drawing ?? variants[resolvedVariant] ?? drawing}
     </svg>;
   });
   PadIcon.displayName = name;
   return PadIcon;
 }
 
-// All five dock glyphs are solid in BOTH selected and unselected states.
-// Selection is currentColor, not a generic outlined/filled icon toggle.
+// Legacy companion drawings below remain for variants outside the round-one
+// scope. getDesktopGlyph supplies the corrected geometry and evidence metadata.
 export const Home = icon('Home', 'screenshot', <>
   <path fill="none" d="M1.8 10.5 10.55 1.85Q12 .55 13.45 1.85L22.2 10.5" />
   <path data-part="rounded-arch-house" fill="var(--pad-icon-fill, currentColor)" fillRule="evenodd" stroke="none"

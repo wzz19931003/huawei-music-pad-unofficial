@@ -1,4 +1,5 @@
 import { parseUpdateVersion } from './update-policy.mjs';
+import { EMPTY_RELEASE_NOTES, projectReleaseNotes } from './update-release-notes.mjs';
 const MESSAGES = {
   unconfigured: '尚未配置有效的更新源，请使用完整安装包。',
   development: '开发模式不下载或安装更新，请使用已打包版本。',
@@ -25,11 +26,17 @@ const ERRORS = {
 export function toUpdateView(state, { checked = false } = {}) {
   const status = Object.hasOwn(MESSAGES, state?.status) ? state.status : 'error';
   const errorCode = Object.hasOwn(ERRORS, state?.errorCode) ? state.errorCode : undefined;
+  const currentVersion = parseUpdateVersion(state?.currentVersion) ?? '未知';
+  const version = parseUpdateVersion(state?.version) ?? undefined;
+  const candidateState = ['available', 'downloading', 'downloaded', 'installing'].includes(status) ||
+    (status === 'error' && ['UPDATE_DOWNLOAD_FAILED', 'UPDATE_DOWNLOAD_UNVERIFIED', 'UPDATE_INSTALL_FAILED'].includes(errorCode));
+  const notes = candidateState ? projectReleaseNotes(state?.releaseNotes, version, currentVersion, state?.releaseNotesTruncated) :
+    { releaseNotes: EMPTY_RELEASE_NOTES, releaseNotesTruncated: false };
   return {
-    status, currentVersion: parseUpdateVersion(state?.currentVersion) ?? '未知',
-    version: parseUpdateVersion(state?.version) ?? undefined,
+    status, currentVersion, version,
     progress: typeof state?.progress === 'number' && Number.isFinite(state.progress) ? Math.min(100, Math.max(0, state.progress)) : undefined,
     message: errorCode && status === 'error' ? ERRORS[errorCode] : status === 'idle' && checked ? '当前已是最新版本' : MESSAGES[status],
     errorCode,
+    ...notes,
   };
 }

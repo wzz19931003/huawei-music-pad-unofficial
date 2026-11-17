@@ -13,6 +13,30 @@ const playerAt = (volume: number) => ({
 
 const render = (volume: number) => renderToStaticMarkup(<PadPlayer player={playerAt(volume)} open onOpen={vi.fn()} onClose={vi.fn()} queueOpen={false} onToggleQueue={vi.fn()} />);
 
+describe('desktop persistent transport', () => {
+  it('places the native lyric control in the one persistent bar without changing Next/mode or Audio ownership', () => {
+    const html = renderToStaticMarkup(<PadPlayer player={playerAt(.6)} open={false} onOpen={vi.fn()} onClose={vi.fn()} queueOpen={false} onToggleQueue={vi.fn()}
+      desktopLyricsControl={<button type="button" aria-label="显示桌面歌词">词</button>} />);
+    expect((html.match(/aria-label="显示桌面歌词"/g) ?? [])).toHaveLength(1);
+    expect(html).toMatch(/aria-label="播放队列"[\s\S]*?<\/button><button type="button" aria-label="显示桌面歌词"/);
+    expect(html).toMatch(/aria-label="下一首"[^>]*>[\s\S]*?<\/button><details class="pad-player-mode pad-mode-picker"/);
+    expect(html).not.toContain('<audio');
+  });
+  it.each([false, true])('keeps one bottom bar with mode immediately after Next when open=%s', open => {
+    const html = renderToStaticMarkup(<PadPlayer player={playerAt(.6)} open={open} onOpen={vi.fn()} onClose={vi.fn()} queueOpen={false} onToggleQueue={vi.fn()} />);
+    expect(html).toContain('class="pad-mini-player desktop-playerbar"');
+    expect(html).toContain(`data-player-view="${open ? 'full' : 'mini'}"`);
+    expect(html).toContain('role="group" aria-label="播放控制"');
+    expect(html).toMatch(/aria-label="下一首"[^>]*>[\s\S]*?<\/button><details class="pad-player-mode pad-mode-picker"/);
+    expect((html.match(/aria-label="上一首"/g) ?? [])).toHaveLength(1);
+    expect((html.match(/aria-label="播放进度"/g) ?? [])).toHaveLength(1);
+    expect((html.match(/aria-label="音量"/g) ?? [])).toHaveLength(1);
+    expect((html.match(/aria-label="选择播放模式"/g) ?? [])).toHaveLength(1);
+    expect(html).not.toContain('<audio');
+    expect(html).toContain(open ? 'aria-label="收起播放页"' : 'aria-label="打开播放页"');
+  });
+});
+
 describe('Pad player standalone volume', () => {
   it('uses the observed hollow organic transport badge for the large control', () => {
     expect(render(.6)).toContain('data-part="organic-transport-badge"');

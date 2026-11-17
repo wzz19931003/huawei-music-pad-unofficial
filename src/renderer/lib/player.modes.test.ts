@@ -72,7 +72,170 @@ beforeEach(() => {
 });
 afterEach(() => { host.slots.forEach(slot => slot?.cleanup?.()); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
+describe('live singleton playback clock for desktop lyrics', () => {
+  it('reads actual Audio rather than cached React progress and exposes no URL or credentials', async () => {
+    await act(() => player.playFrom([track('clock')], 0));
+    const reader = (player as unknown as { readClock?: () => Record<string, number | boolean | string | null> }).readClock;
+    expect(reader, 'desktop lyrics must read the one existing Audio clock').toBeTypeOf('function');
+    vi.spyOn(Date, 'now').mockReturnValue(123456);
+    Object.assign(audio(), { currentTime: 13.125, duration: 75, paused: false, ended: false, seeking: false, readyState: 4, playbackRate: 1.25 });
+    expect(player.position).toBe(0); // no timeupdate event was emitted
+    const clock = reader!();
+    expect(clock).toMatchObject({ positionSeconds: 13.125, durationSeconds: 75, playing: true, playbackRate: 1.25, sampledAtMs: 123456 });
+    expect(Object.keys(clock).sort()).toEqual(['generation', 'trackId', 'positionSeconds', 'durationSeconds', 'playing', 'playbackRate', 'sampledAtMs'].sort());
+    expect(clock.trackId).toBe('clock');
+    expect(Number.isSafeInteger(clock.generation)).toBe(true);
+    for (const state of [{ paused: true }, { paused: false, ended: true }, { ended: false, seeking: true }, { seeking: false, readyState: 1 }]) {
+      Object.assign(audio(), state);
+      expect(reader!().playing).toBe(false);
+    }
+    Object.assign(audio(), { currentTime: Number.NaN, duration: Number.POSITIVE_INFINITY, playbackRate: 0 });
+    expect(reader!()).toMatchObject({ positionSeconds: 0, durationSeconds: 0, playing: false, playbackRate: 1 });
+    const generation = Number(reader!().generation);
+    await act(() => player.next());
+    expect(player.readClock).toBe(reader);
+    expect(player.readClock().generation).toBeGreaterThan(generation);
+    expect(TestAudio.instances).toHaveLength(1);
+  });
+  it('keeps the clock generation and identity bound to the committed Audio source during pending resolves and clears', async () => {
+    let releaseFirst!: (value: Playback) => void;
+    ipc.resolvePlayback.mockImplementationOnce(() => new Promise<Playback>(resolve => { releaseFirst = resolve; }));
+    await act(() => player.playFrom([track('source-a'), track('source-b')], 0));
+    expect(player.readClock()).toMatchObject({ generation: 0, trackId: null });
+    await act(() => releaseFirst({ url: 'blob:synthetic-source-a', actualQuality: 'standard' }));
+    const first = player.readClock().generation;
+    Object.assign(audio(), { currentTime: 12.5, paused: false, ended: false, seeking: false, readyState: 4 });
+    let releaseSecond!: (value: Playback) => void;
+    ipc.resolvePlayback.mockImplementationOnce(() => new Promise<Playback>(resolve => { releaseSecond = resolve; }));
+    await act(() => player.next());
+    expect(player.current?.id).toBe('source-b');
+    expect(audio().src).toBe('blob:synthetic-source-a'); // preserve the existing pending-resolution behavior
+    expect(player.readClock()).toMatchObject({ generation: first, trackId: 'source-a', positionSeconds: 12.5, playing: true });
+    await act(() => releaseSecond({ url: 'blob:synthetic-source-b', actualQuality: 'standard' }));
+    expect(player.readClock().generation).toBeGreaterThan(first);
+    expect(player.readClock()).toMatchObject({ trackId: 'source-b', positionSeconds: 0 });
+    const committed = player.readClock().generation;
+    await act(() => { player.removeAt(1); player.removeAt(0); });
+    expect(player.readClock()).toMatchObject({ generation: committed, trackId: null, playing: false });
+    let releaseThird!: (value: Playback) => void;
+    ipc.resolvePlayback.mockImplementationOnce(() => new Promise<Playback>(resolve => { releaseThird = resolve; }));
+    await act(() => player.playFrom([track('source-c')], 0));
+    expect(player.readClock()).toMatchObject({ generation: committed, trackId: null });
+    await act(() => releaseThird({ url: 'blob:synthetic-source-c', actualQuality: 'standard' }));
+    expect(player.readClock().generation).toBeGreaterThan(committed);
+    expect(player.readClock().trackId).toBe('source-c');
+    expect(TestAudio.instances).toHaveLength(1);
+  });
+});
+
 describe('singleton player mode integration', () => {
+  it('commits real title-search discoveries only after ready and describes client exploration rather than new releases', async () => {
+    const favorites = ['saved-0', 'saved-1', 'saved-2'].map(track);
+    const discovery: Track = { ...track('outside-catalog-track'),
+      artists: [{ id: 'outside-artist', name: 'Outside artist' }], album: { id: 'outside-album', title: 'Outside album' },
+    };
+    vi.mocked(window.desktop.music.favorites).mockResolvedValue({ ok: true, data: { tracks: favorites, nextStart: 3, hasMore: false } });
+    vi.mocked(window.desktop.music.artist).mockResolvedValue({ ok: true, data: {
+      artist: { id: 'seed-artist', name: 'Synthetic artist' }, tracks: ['related-0', 'related-1', 'related-2'].map(track), albums: [],
+    } });
+    let release!: (value: any) => void;
+    ipc.search.mockImplementation(() => new Promise(resolve => { release = resolve; }));
+    await act(() => player.playFrom([track('keep')], 0));
+    let pending!: Promise<boolean>;
+    await act(() => { pending = player.selectMode('heart'); });
+    const loadingMessage = player.heartMessage;
+    expect(player.mode).toBe('all');
+    expect(player.queue.map(row => row.id)).toEqual(['keep']);
+    expect(config.onPreferencesChange).not.toHaveBeenCalled();
+    await act(() => release({ tracks: [discovery], nextStart: 1, hasMore: false }));
+    expect(await pending).toBe(true);
+    await act();
+    expect(player.queue.map(row => row.id)).toEqual(['saved-0', 'related-0', 'saved-1', 'related-1', 'saved-2', discovery.id]);
+    expect(player.queue.at(-1)).toBe(discovery);
+    expect(player.heartStatus).toBe('ready');
+    expect(player.heartMessage).toMatch(/客户端.*关联.*探索/);
+    expect(player.heartMessage).toContain('1 首探索曲目');
+    expect(player.heartMessage).toContain('非官方推荐');
+    expect(player.heartMessage).not.toMatch(/新歌|新发行/);
+    expect(loadingMessage).toMatch(/客户端.*探索/);
+    expect(loadingMessage).not.toMatch(/新歌|新发行/);
+    expect(config.onPreferencesChange).toHaveBeenCalledExactlyOnceWith('heart');
+    expect(TestAudio.instances).toHaveLength(1);
+  });
+  it.each(['empty', 'failed'] as const)('keeps usable related playback and discloses no exploration results when title search is %s', async kind => {
+    const favorites = ['saved-0', 'saved-1'].map(track);
+    vi.mocked(window.desktop.music.favorites).mockResolvedValue({ ok: true, data: { tracks: favorites, nextStart: 2, hasMore: false } });
+    vi.mocked(window.desktop.music.artist).mockResolvedValue({ ok: true, data: {
+      artist: { id: 'seed-artist', name: 'Synthetic artist' }, tracks: ['related-0', 'related-1'].map(track), albums: [],
+    } });
+    if (kind === 'failed') ipc.search.mockRejectedValue(new Error('synthetic title search failure'));
+    else ipc.search.mockResolvedValue({ tracks: [], nextStart: 0, hasMore: false });
+    await act(() => player.playFrom([track('keep')], 0));
+    let pending!: Promise<boolean>;
+    await act(() => { pending = player.selectMode('heart'); });
+    expect(await pending).toBe(true);
+    await act();
+    expect(player.queue.map(row => row.id)).toEqual(['saved-0', 'related-0', 'saved-1', 'related-1']);
+    expect(player.mode).toBe('heart');
+    expect(player.heartStatus).toBe('ready');
+    expect(player.heartMessage).toContain('本轮未找到收藏歌手或专辑外的可用探索结果');
+    expect(player.heartMessage).toContain('客户端关联');
+    expect(player.heartMessage).toContain('非官方推荐');
+    expect(player.heartMessage).not.toMatch(/新歌|新发行|0 首探索/);
+    expect(config.onPreferencesChange).toHaveBeenCalledExactlyOnceWith('heart');
+    expect(TestAudio.instances).toHaveLength(1);
+  });
+  it('preserves queue and mode on no candidates and describes client association and exploration without new-release claims', async () => {
+    vi.mocked(window.desktop.music.favorites).mockResolvedValue({ ok: true, data: { tracks: [track('saved')], nextStart: 1, hasMore: false } });
+    vi.mocked(window.desktop.music.artist).mockResolvedValue({ ok: true, data: {
+      artist: { id: 'seed-artist', name: 'Synthetic artist' }, tracks: [], albums: [],
+    } });
+    ipc.search.mockResolvedValue({ tracks: [], nextStart: 0, hasMore: false });
+    await act(() => { player.setPreferences('one'); player.playFrom(['keep-a', 'keep-b'].map(track), 1); });
+    const committed = player.readClock();
+    let pending!: Promise<boolean>;
+    await act(() => { pending = player.selectMode('heart'); });
+    expect(await pending).toBe(false);
+    await act();
+    expect(player.queue.map(row => row.id)).toEqual(['keep-a', 'keep-b']);
+    expect(player.index).toBe(1);
+    expect(player.mode).toBe('one');
+    expect(player.heartStatus).toBe('no-candidates');
+    expect(player.heartMessage).toMatch(/客户端.*关联.*探索/);
+    expect(player.heartMessage).not.toMatch(/新歌|新发行/);
+    expect(player.readClock()).toMatchObject({ generation: committed.generation, trackId: 'keep-b' });
+    expect(config.onPreferencesChange).not.toHaveBeenCalled();
+    expect(ipc.resolvePlayback).toHaveBeenCalledTimes(1);
+    expect(TestAudio.instances).toHaveLength(1);
+  });
+  it('keeps the existing queue and singleton Audio when the account changes during title exploration', async () => {
+    const favorites = ['saved-0', 'saved-1', 'saved-2'].map(track);
+    vi.mocked(window.desktop.music.favorites).mockResolvedValue({ ok: true, data: { tracks: favorites, nextStart: 3, hasMore: false } });
+    vi.mocked(window.desktop.music.artist).mockResolvedValue({ ok: true, data: {
+      artist: { id: 'seed-artist', name: 'Synthetic artist' }, tracks: ['related-0', 'related-1', 'related-2'].map(track), albums: [],
+    } });
+    let release!: (value: any) => void;
+    ipc.search.mockImplementation(() => new Promise(resolve => { release = resolve; }));
+    await act(() => { player.setPreferences('shuffle'); player.playFrom(['keep-a', 'keep-b'].map(track), 1); });
+    audio().currentTime = 7;
+    const committed = player.readClock();
+    let pending!: Promise<boolean>;
+    await act(() => { pending = player.selectMode('heart'); });
+    expect(ipc.search).toHaveBeenCalledExactlyOnceWith(favorites[0].title);
+    expect(player.heartStatus).toBe('loading');
+    expect(player.queue.map(row => row.id)).toEqual(['keep-a', 'keep-b']);
+    config.accountKey = 'other-synthetic-account'; render();
+    expect(await pending).toBe(false);
+    await act(() => release({ tracks: [{ ...track('late-outside'), artists: [{ id: 'outside', name: 'Outside' }] }], nextStart: 1, hasMore: false }));
+    expect(player.mode).toBe('shuffle');
+    expect(player.index).toBe(1);
+    expect(player.queue.map(row => row.id)).toEqual(['keep-a', 'keep-b']);
+    expect(player.heartStatus).toBe('cancelled');
+    expect(player.readClock()).toMatchObject({ generation: committed.generation, trackId: 'keep-b', positionSeconds: 7 });
+    expect(config.onPreferencesChange).not.toHaveBeenCalled();
+    expect(ipc.resolvePlayback).toHaveBeenCalledTimes(1);
+    expect(TestAudio.instances).toHaveLength(1);
+  });
   it('rejects an incomplete favorites snapshot at the page budget instead of calling already-saved tracks new', async () => {
     vi.mocked(window.desktop.music.favorites).mockImplementation(async ({ start = 0 } = {}) => ({ ok: true, data: {
       tracks: Array.from({ length: 50 }, (_, index) => track(`saved-${start + index}`)), nextStart: start + 50, hasMore: true,

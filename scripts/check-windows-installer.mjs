@@ -1,7 +1,8 @@
-// Static inspection on Linux. Never executes the Windows binary or claims Windows acceptance.
+// Read-only NSIS inspection. Never executes the installer; runtime acceptance is separate.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { inflateSync } from 'node:zlib';
+import { NtExecutable, NtExecutableResource } from 'pe-library';
+import { Resource } from 'resedit';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
@@ -30,44 +31,6 @@ function readIcoEntries(ico) {
   });
 }
 
-function decodePng(png) {
-  const width = png.readUInt32BE(16);
-  const height = png.readUInt32BE(20);
-  const depth = png[24];
-  const colorType = png[25];
-  assert.equal(depth, 8, 'icon PNG must be 8-bit');
-  const channels = colorType === 6 ? 4 : colorType === 2 ? 3 : null;
-  assert.ok(channels, `unsupported icon PNG color type ${colorType}`);
-  const chunks = [];
-  for (let at = 8; at + 8 <= png.length;) {
-    const length = png.readUInt32BE(at);
-    const type = png.subarray(at + 4, at + 8).toString();
-    if (type === 'IDAT') chunks.push(png.subarray(at + 8, at + 8 + length));
-    if (type === 'IEND') break;
-    at += 12 + length;
-  }
-  const raw = inflateSync(Buffer.concat(chunks));
-  const stride = width * channels;
-  const pixels = Buffer.alloc(height * stride);
-  for (let row = 0; row < height; row++) {
-    const filter = raw[row * (stride + 1)];
-    const source = raw.subarray(row * (stride + 1) + 1, row * (stride + 1) + 1 + stride);
-    const target = pixels.subarray(row * stride, (row + 1) * stride);
-    const previous = row === 0 ? Buffer.alloc(stride) : pixels.subarray((row - 1) * stride, row * stride);
-    for (let index = 0; index < stride; index++) {
-      const left = index >= channels ? target[index - channels] : 0;
-      const up = previous[index];
-      const upLeft = index >= channels ? previous[index - channels] : 0;
-      const value = source[index];
-      target[index] = filter === 0 ? value
-        : filter === 1 ? (value + left) & 0xff
-        : filter === 2 ? (value + up) & 0xff
-        : filter === 3 ? (value + ((left + up) >> 1)) & 0xff
-        : (value + (() => { const p = left + up - upLeft; const pa = Math.abs(p - left); const pb = Math.abs(p - up); const pc = Math.abs(p - upLeft); return pa <= pb && pa <= pc ? left : pb <= pc ? up : upLeft; })()) & 0xff;
-    }
-  }
-  return { width, height, channels, pixels };
-}
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
 async function walkFiles(directory, base = directory) {
@@ -153,36 +116,31 @@ try {
   assert.ok(outerBytes.includes(Buffer.from('Nullsoft')) || outerBytes.includes(Buffer.from('NSIS Error')),
     'installer wrapper is not a Nullsoft (NSIS) package');
   assert.equal(appPe.machine, 0x8664, 'application is not Windows x64');
-  // The icon must be our own artwork: a near-black rounded tile with a light note glyph.
-  // electron-builder writes <out>/.icon-ico/icon.ico, but that intermediate is skipped when the
-  // build reuses a local electron dist, so fall back to the source icon in build/.
-  const embeddedIcon = join(unpackedArchive, '..', '..', '..', '.icon-ico', 'icon.ico');
-  const iconPath = (await exists(embeddedIcon)) ? embeddedIcon : resolve('build', 'icon.ico');
-  const ico = readIcoEntries(await readFile(iconPath));
-  assert.ok(ico.length >= 6, `expected a full icon size set, got ${ico.length}`);
-  const largest = ico.filter(entry => entry.png).sort((a, b) => b.width - a.width)[0];
-  assert.ok(largest && largest.width >= 256, 'icon is missing a 256px PNG entry');
-  const art = decodePng(largest.data);
-  const pixel = (x, y) => {
-    const at = (y * art.width + x) * art.channels;
-    return [...art.pixels.subarray(at, at + 3), art.channels === 4 ? art.pixels[at + 3] : 255];
-  };
-  const near = (value, target, tolerance = 26) => value.every((channel, index) => Math.abs(channel - target[index]) <= tolerance);
-  // Rounded corners are transparent, so judge by coverage: a dark field with a small light glyph.
-  // The stock Electron icon fails both ratios.
-  let dark = 0, light = 0, sampled = 0;
-  for (let y = 0; y < art.height; y += 2) for (let x = 0; x < art.width; x += 2) {
-    const [r, g, b, a] = pixel(x, y);
-    if (a < 8) continue;
-    sampled++;
-    if (r < 40 && g < 40 && b < 48) dark++;
-    if (near([r, g, b], [250, 250, 250], 40)) light++;
+  const ico = readIcoEntries(await readFile(resolve('build', 'icon.ico')));
+  assert.deepEqual(ico.map(entry => entry.width).sort((a, b) => a - b), [16, 24, 32, 48, 64, 128, 256]);
+  assert.ok(ico.every(entry => entry.png), 'all approved source ICO frames must be PNG');
+  // Inspect the actual executable, not electron-builder's intermediate or a source-only PNG.
+  const resources = NtExecutableResource.from(NtExecutable.from(appBytes));
+  const groups = Resource.IconGroupEntry.fromEntries(resources.entries);
+  const sourceFrames = new Map(ico.map(entry => [entry.width, hash(entry.data)]));
+  const matching = groups.find(group => group.icons.length === ico.length && new Set(group.icons.map(icon => icon.width || 256)).size === ico.length && group.icons.every(icon => {
+    const entry = resources.entries.find(item => item.type === 3 && item.id === icon.iconID && item.lang === group.lang);
+    return entry && hash(Buffer.from(entry.bin)) === sourceFrames.get(icon.width || 256);
+  }));
+  assert.ok(matching, 'no EXE icon group matches every approved source ICO frame byte-for-byte');
+  const packageConfig = JSON.parse(await readFile('package.json', 'utf8'));
+  const versionTables = Resource.VersionInfo.fromEntries(resources.entries)
+    .flatMap(info => info.getAllLanguagesForStringValues().map(lang => info.getStringValues(lang)));
+  assert.ok(versionTables.some(info => info.ProductName === packageConfig.build.productName
+    && info.FileDescription === packageConfig.build.productName && info.FileVersion === packageConfig.version),
+    'the executable product name/version resources must match the current Wmusic build');
+  for (const required of ['LICENSE', 'NOTICE']) {
+    assert.ok(entries.includes(required), `missing ${required}`);
+    assert.equal(hash(await readFile(join(unpackedAsar, required))), hash(await readFile(required)), `stale ${required}`);
   }
-  const darkRatio = dark / sampled;
-  const lightRatio = light / sampled;
-  assert.ok(darkRatio > 0.3, `icon background is not the dark tile (${darkRatio.toFixed(3)})`);
-  assert.ok(lightRatio > 0.01 && lightRatio < 0.5, `unexpected glyph coverage ${lightRatio.toFixed(3)}`);
-  const iconCoverage = { dark: Number(darkRatio.toFixed(3)), glyph: Number(lightRatio.toFixed(3)) };
+  const expectedOutputs = (await walkFiles(resolve('out'))).map(path => `out/${path}`).sort();
+  assert.deepEqual(entries.filter(path => path.startsWith('out/')).sort(), expectedOutputs, 'packaged output inventory differs');
+  const iconBinding = { groupId: matching.id, lang: matching.lang, matchedFrames: matching.icons.length, sha256: hash(await readFile('build/icon.ico')) };
   assert.equal(appPe.signed, false, 'expected an explicitly unsigned internal build');
   assert.equal(wrapperPe.signed, false);
   assert.ok(appBytes.includes(Buffer.from('asInvoker')), 'application execution manifest must not request elevation');
@@ -190,6 +148,6 @@ try {
     sha256: hash(outerBytes), installerWithEmbeddedApp: true, appArchitecture: 'x64',
     wrapperArchitecture: wrapperPe.machine === 0x14c ? 'x86 NSIS launcher (starts x64 app)' : 'other',
     unsigned: true, noPrivateDataOrSources: true, matchesCurrentBuild: true,
-    iconSizes: ico.map(entry => entry.width).sort((a, b) => a - b), iconArtworkVerified: true, iconCoverage,
+    iconSizes: ico.map(entry => entry.width).sort((a, b) => a - b), iconArtworkVerified: true, iconBinding,
     windowsRuntimeTested: false, installAndLaunch: 'not-tested' }, null, 2));
 } finally { await rm(root, { recursive: true, force: true }); }

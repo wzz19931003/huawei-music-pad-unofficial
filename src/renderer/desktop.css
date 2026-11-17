@@ -1,0 +1,75 @@
+/* Windows desktop interaction shell. No account or playback policy lives here. */
+.pad-app.desktop-app .desktop-sidebar { position: fixed; top: var(--pad-window-height); bottom: var(--desktop-playerbar); left: 0; width: var(--desktop-sidebar); z-index: 160; display: flex; flex-direction: column; gap: 24px; padding: 26px 12px 16px; border-right: 1px solid var(--line); background: var(--bg-sidebar); overflow-y: auto; }
+.pad-app.desktop-app .pad-navigation, .pad-app.desktop-app .desktop-library-nav { position: static; display: flex; flex-direction: column; align-items: stretch; gap: 5px; width: auto; height: auto; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; backdrop-filter: none; transform: none; }
+.pad-app.desktop-app .desktop-library-nav { border-top: 1px solid var(--line); padding-top: 20px; }
+.pad-app.desktop-app .pad-nav-item { flex: none; flex-direction: row; justify-content: flex-start; gap: 12px; padding: 10px 14px; min-height: 42px; border-radius: var(--radius-md); color: var(--muted); font-size: 14px; }
+.pad-app.desktop-app .pad-nav-item:hover { color: var(--text); background: var(--surface); }
+.pad-app.desktop-app .pad-nav-item.is-active { color: var(--like); background: var(--surface-2); }
+.pad-app.desktop-app .pad-nav-glyph { height: 24px; }
+.pad-app.desktop-app .pad-nav-glyph svg { width: 23px; height: 23px; }
+.pad-app.desktop-app > .stage { left: var(--desktop-sidebar); bottom: var(--desktop-playerbar); grid-template-rows: var(--desktop-head) minmax(0, 1fr); }
+.pad-app.desktop-app .pad-page-head { padding-inline: var(--desktop-page-edge); }
+.pad-app.desktop-app .main { padding: 0 var(--desktop-page-edge) 32px; scrollbar-gutter: stable; }
+.pad-app.desktop-app .pad-main > .screen { padding: 0; }
+.pad-app.desktop-app .pad-player-screen { left: var(--desktop-sidebar); bottom: var(--desktop-playerbar); }
+.pad-app.desktop-app .desktop-playerbar { left: 0; right: 0; bottom: 0; width: 100%; height: var(--desktop-playerbar); display: grid; grid-template-columns: minmax(160px, 1fr) minmax(300px, 1.6fr) minmax(230px, 1fr); gap: var(--desktop-gap); padding: 12px 22px; border: 0; border-top: 1px solid var(--line-strong); border-radius: 0; background: var(--bg-bar); box-shadow: none; backdrop-filter: none; z-index: 170; }
+.pad-app.desktop-app .pad-mini-track { gap: 12px; width: 100%; height: 60px; border-radius: var(--radius-sm); }
+.pad-app.desktop-app .pad-mini-track > .cover { width: 52px; height: 52px; }
+.pad-app.desktop-app .pad-mini-meta { flex: 1; }
+.pad-app.desktop-app .pad-mini-meta > span { font-size: 12px; }
+.pad-app.desktop-app .pad-mini-track > svg { flex: none; color: var(--muted); }
+.desktop-expand { transform: rotate(180deg); }
+.desktop-player-center { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.pad-app.desktop-app .desktop-transport { justify-content: center; gap: 12px; padding: 0; height: var(--desktop-control-hit); }
+.pad-app.desktop-app .desktop-transport .pad-control { min-width: var(--desktop-control-hit); min-height: var(--desktop-control-hit); }
+.pad-app.desktop-app .desktop-transport .pad-control > svg { width: 23px; height: 23px; }
+.pad-app.desktop-app .desktop-transport .pad-play-toggle { width: var(--desktop-control-hit); height: var(--desktop-control-hit); padding: 11px; }
+.pad-app.desktop-app .desktop-transport .pad-play-toggle.is-large { padding: 0; margin: 0; color: var(--text); background: transparent; }
+.pad-app.desktop-app .pad-seek-block { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.pad-app.desktop-app .pad-seek { flex: 1; min-width: 0; height: 5px; }
+.desktop-player-tools { display: flex; justify-content: flex-end; align-items: center; gap: 6px; min-width: 0; }
+.pad-app.desktop-app .desktop-player-tools > .pad-control { width: var(--desktop-control-hit); height: var(--desktop-control-hit); }
+.pad-app.desktop-app .pad-volume-control { align-self: auto; width: 156px; margin: 0; gap: 6px; }
+.pad-app.desktop-app .pad-volume-control .pad-control { width: var(--desktop-control-hit); height: var(--desktop-control-hit); min-width: var(--desktop-control-hit); min-height: var(--desktop-control-hit); }
+.pad-app.desktop-app .pad-volume-control input { min-width: 50px; width: 72px; }
+.pad-app.desktop-app .pad-volume-control output { width: 31px; }
+.pad-app.desktop-app .pad-player-mode { position: relative; top: auto; right: auto; }
+.pad-app.desktop-app .pad-mode-trigger { display: flex; align-items: center; background: none; border: 0; padding: 5px; gap: 4px; }
+.pad-app.desktop-app .pad-mode-trigger > span { max-width: 5em; white-space: nowrap; font-size: 12px; }
+.pad-app.desktop-app .pad-mode-trigger > svg:last-child { width: 12px; height: 12px; }
+.pad-app.desktop-app .pad-mode-menu { top: auto; bottom: calc(100% + 16px); right: 0; }
+.pad-app.desktop-app .pad-heart-status.is-mini { bottom: calc(var(--desktop-playerbar) + 12px); max-width: min(440px, 70vw); }
+.pad-app.desktop-app .pad-player-right { top: 28px; bottom: 34px; left: 53%; }
+.pad-app.desktop-app .pad-player-background { width: 60%; }
+.pad-app.desktop-app .pad-player-shade { background: linear-gradient(90deg, transparent 10%, var(--pad-player-shade) 60%); }
+.pad-app.desktop-app .queue-panel { top: calc(var(--pad-window-height) + 12px); bottom: calc(var(--desktop-playerbar) + 12px); max-height: none; right: 18px; }
+.pad-app.desktop-app .toast { bottom: calc(var(--desktop-playerbar) + 16px); }
+.pad-app.desktop-app .pad-home-features { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; }
+.pad-app.desktop-app .pad-feature-card { aspect-ratio: 4 / 5; min-height: 210px; }
+.pad-app.desktop-app .pad-feature-top { font-size: 11px; gap: 5px; left: 10px; right: 10px; }
+.pad-app.desktop-app .pad-feature-footer { padding: 14px 10px; gap: 6px; min-height: 72px; }
+.pad-app.desktop-app .pad-feature-copy strong { font-size: 19px; }
+.pad-app.desktop-app .pad-feature-glyph { width: 28px; height: 28px; }
+.pad-app.desktop-app .pad-feature-glyph > svg { width: 18px; height: 18px; }
+.pad-app.desktop-app .desktop-feature-symbol { width: 46%; height: 46%; opacity: .45; }
+.pad-app.desktop-app .pad-collection-type { font-size: clamp(25px, 2.5vw, 44px); }
+.pad-app.desktop-app .pad-daily-art b { font-size: clamp(72px, 8vw, 140px); }
+@media (max-width: 1100px) {
+  .pad-app.desktop-app .pad-home-features { grid-template-columns: repeat(5, minmax(152px, 1fr)); overflow-x: auto; padding: 4px; margin: -4px; }
+  .pad-app.desktop-app { --desktop-sidebar: 176px; }
+  .pad-app.desktop-app .desktop-playerbar { grid-template-columns: minmax(140px, 1fr) minmax(290px, 1.6fr) 210px; gap: 10px; padding-inline: 16px; }
+  .pad-app.desktop-app .pad-volume-control { width: 132px; }
+  .pad-app.desktop-app .pad-volume-control output { display: none; }
+  .pad-app.desktop-app .pad-page-head { gap: 18px; }
+  .pad-app.desktop-app .pad-search { width: min(340px, 45%); }
+}
+@media (max-width: 800px) {
+  .pad-app.desktop-app { --desktop-sidebar: 148px; }
+  .pad-app.desktop-app .pad-nav-item { padding-inline: 9px; gap: 9px; font-size: 13px; }
+  .pad-app.desktop-app .desktop-playerbar { grid-template-columns: minmax(110px, 1fr) minmax(260px, 1.8fr) 116px; padding-inline: 12px; gap: 8px; }
+  .pad-app.desktop-app .pad-mini-track > .cover { width: 40px; height: 40px; }
+  .pad-app.desktop-app .pad-mini-track > svg { display: none; }
+  .pad-app.desktop-app .pad-volume-control { width: 34px; }
+  .pad-app.desktop-app .pad-volume-control input { position: absolute; bottom: calc(100% + 16px); right: 12px; width: 120px; }
+  .pad-app.desktop-app .pad-volume-control output { display: none; }
+}
