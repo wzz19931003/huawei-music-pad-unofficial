@@ -36,6 +36,9 @@ export type DesktopLyricsController = {
   /** Native tray/main recovery; does not depend on hover forwarding in a locked window. */
   setLocked(locked: boolean): Promise<DesktopLyricsResult<DesktopLyricsState>>;
   updatePreferences(patch: DesktopLyricsMainPatch): Promise<DesktopLyricsResult<DesktopLyricsState>>;
+  /** Stop new work, drain bounded preferences and close the overlay; keep typed IPC replies. */
+  quiesce(): Promise<void>;
+  /** Synchronously revoke IPC/resources, returning the same bounded shutdown drain. */
   dispose(): Promise<void>;
 };
 
@@ -66,6 +69,8 @@ export async function createDesktopLyricsController(options: DesktopLyricsContro
   let persistence: DesktopLyricsState['persistence'] = 'saved';
   let overlay: BrowserWindow | null = null;
   let loadingWindow: Promise<BrowserWindow> | null = null;
+  let stopWindowLoading = () => {};
+  const windowLoadingStopped = new Promise<void>(resolve => { stopWindowLoading = resolve; });
   let disposed = false;
   let disposal: Promise<void> | null = null;
   let quitting = false;
@@ -125,7 +130,7 @@ export async function createDesktopLyricsController(options: DesktopLyricsContro
     broadcast();
   }
   function reset() {
-    if (disposed) return timeline.snapshot().epoch;
+    if (disposed || quitting) return timeline.snapshot().epoch;
     const epoch = timeline.reset();
     if (preferences.locked && !canRecover()) {
       preferences = { ...preferences, locked: false };
@@ -138,12 +143,13 @@ export async function createDesktopLyricsController(options: DesktopLyricsContro
   }
   const onBeforeQuit = () => {
     quitting = true;
+    stopWindowLoading();
     timeline.reset();
     broadcast();
   };
   app.on('before-quit', onBeforeQuit);
   function attachMainWindow() {
-    if (disposed) return;
+    if (disposed || quitting) return;
     const window = options.getMainWindow();
     const contents = window && !window.isDestroyed() ? window.webContents : null;
     if (contents === attachedMain) return;
@@ -204,10 +210,12 @@ export async function createDesktopLyricsController(options: DesktopLyricsContro
   if (preferences.locked && !canRecover()) preferences = { ...preferences, locked: false };
 
   function ensureWindow(): Promise<BrowserWindow> {
-    if (loadingWindow) return loadingWindow;
-    if (overlay && !overlay.isDestroyed()) return Promise.resolve(overlay);
-    loadingWindow = createOverlayWindow().finally(() => { loadingWindow = null; });
-    return loadingWindow;
+    if (!loadingWindow) {
+      if (overlay && !overlay.isDestroyed()) return Promise.resolve(overlay);
+      loadingWindow = createOverlayWindow().finally(() => { loadingWindow = null; });
+    }
+    // loadURL need not settle before quit can drain and destroy the overlay.
+    return Promise.race([loadingWindow, windowLoadingStopped.then(() => { throw new Error('Desktop lyrics closed'); })]);
   }
   async function createOverlayWindow() {
     const isolatedSession = session.fromPartition(`desktop-lyrics-${randomUUID()}`, { cache: false });
@@ -266,7 +274,12 @@ export async function createDesktopLyricsController(options: DesktopLyricsContro
     });
     window.webContents.on('did-finish-load', broadcast);
     try { await window.loadURL(overlayUrl); }
-    catch { if (!window.isDestroyed()) window.destroy(); if (!disposed) report('WINDOW_FAILED'); throw new Error('Desktop lyrics window failed'); }
+    catch {
+      if (!window.isDestroyed()) window.destroy();
+      // Shutdown deliberately destroys a pending load; only an active load is a window fault.
+      if (!disposed && !quitting) report('WINDOW_FAILED');
+      throw new Error('Desktop lyrics window failed');
+    }
     if (notice?.code === 'WINDOW_FAILED') notice = null;
     return window;
   }
@@ -321,13 +334,14 @@ export async function createDesktopLyricsController(options: DesktopLyricsContro
   });
   register('overlay', channels.overlayHide, input => input === undefined ? updatePreferences({ visible: false }) : failure('INVALID'));
 
-  function dispose(): Promise<void> {
+  function quiesce(): Promise<void> {
     if (disposal) return disposal;
     const flushMove = moveTimer !== undefined;
     clearTimeout(moveTimer);
     moveTimer = undefined;
     if (flushMove) reflow();
-    disposed = true;
+    quitting = true;
+    stopWindowLoading();
     app.removeListener('before-quit', onBeforeQuit);
     screen.removeListener('display-added', onDisplayChange);
     screen.removeListener('display-removed', onDisplayChange);
@@ -335,7 +349,6 @@ export async function createDesktopLyricsController(options: DesktopLyricsContro
     detachMain();
     attachedMain = null;
     timeline.reset();
-    for (const channel of registered) ipcMain.removeHandler(channel);
     if (overlay && !overlay.isDestroyed()) overlay.destroy();
     overlay = null;
     for (const cleanup of securityCleanup) cleanup();
@@ -343,13 +356,21 @@ export async function createDesktopLyricsController(options: DesktopLyricsContro
     disposal = Promise.resolve(writing).then(() => undefined);
     return disposal;
   }
+  function dispose(): Promise<void> {
+    const drain = quiesce();
+    if (!disposed) {
+      disposed = true;
+      for (const channel of registered) ipcMain.removeHandler(channel);
+    }
+    return drain;
+  }
   const controller: DesktopLyricsController = {
-    getState, updatePreferences, attachMainWindow, reset, dispose,
+    getState, updatePreferences, attachMainWindow, reset, quiesce, dispose,
     setVisible: visible => updatePreferences({ visible }),
     setLocked: locked => updatePreferences({ locked }),
   };
   attachMainWindow();
-  if (preferences.visible) {
+  if (preferences.visible && !quitting) {
     try {
       const window = await ensureWindow();
       // Restoring visibility must honor Hide and lifecycle changes made during load.

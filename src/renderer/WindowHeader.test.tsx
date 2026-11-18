@@ -13,6 +13,9 @@ describe('Wmusic window header', () => {
     expect(html).toContain('class="window-brand"');
     expect(html).toContain(`title="${APP_DISPLAY_NAME}"`);
     expect(html).toContain(APP_BRAND_LABEL);
+    expect(html).toContain('title="Wmusic"');
+    expect(html).toContain('<span>Wmusic</span>');
+    expect(html).not.toContain('非官方');
     expect(html).toContain(`src="${logo}"`);
     expect(html).toContain('class="window-brand-logo"');
     expect(html).not.toContain('华为音乐（非官方）');

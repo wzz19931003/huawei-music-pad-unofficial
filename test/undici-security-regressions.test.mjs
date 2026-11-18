@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
+import { runInNewContext } from 'node:vm';
 import * as importedUndici from 'undici';
 
 // Intentionally exercise the external package, NOT Node/Electron's builtin fetch.
@@ -80,11 +81,30 @@ async function withOrigins(t, handlers, run) {
         sockets.add(socket);
         socket.once('close', () => sockets.delete(socket));
       });
-      await bounded(new Promise((resolve, reject) => {
-        server.once('error', reject);
-        server.listen(0, '127.0.0.1', resolve);
-      }), 'listen');
-      origins.push(`http://127.0.0.1:${server.address().port}`);
+      // Some Windows hosts allocate port-0 in a low range that includes Fetch's
+      // forbidden ports. Rebind only the owned fixture; never relax client policy.
+      const { badPortsSet } = require('undici/lib/web/fetch/constants.js');
+      assert.ok(badPortsSet instanceof Set && badPortsSet.has('6000'), 'Use the actual tested fetch port policy');
+      for (let attempt = 0; attempt < 16; attempt += 1) {
+        await bounded(new Promise((resolve, reject) => {
+          const onError = error => reject(error);
+          server.once('error', onError);
+          server.listen(0, '127.0.0.1', () => {
+            server.removeListener('error', onError);
+            resolve();
+          });
+        }), 'listen');
+        const port = server.address().port;
+        if (!badPortsSet.has(String(port))) {
+          origins.push(`http://127.0.0.1:${port}`);
+          break;
+        }
+        t.diagnostic(`owned fixture port=${port} is fetch-blocked; closing before rebind ${attempt + 1}/16`);
+        const closed = new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+        server.closeAllConnections();
+        await bounded(closed, 'close fetch-blocked fixture port');
+        if (attempt === 15) throw new Error('No fetch-compatible owned fixture port after 16 binds');
+      }
     }
     const fetchLocal = (url, options = {}) => {
       assert.ok(origins.includes(new URL(url).origin), 'Only owned local fixture URLs may be requested');
@@ -106,6 +126,73 @@ function isIntegrityMismatch(error) {
   assert.match(String(error.cause), /integrity mismatch/);
   return true;
 }
+
+test('local fixtures rebind a fetch-blocked OS port before correct SRI requests', TEST_OPTIONS, async t => {
+  const { badPortsSet } = require('undici/lib/web/fetch/constants.js');
+  let reserved;
+  let forcedPort;
+  for (const port of [6000, 6665, 6666, 6697, 10080]) {
+    assert.ok(badPortsSet.has(String(port)), 'The forced port must be blocked by the actual tested fetch implementation');
+    const server = createServer();
+    try {
+      await bounded(new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(port, '127.0.0.1', resolve);
+      }), 'reserve an owned fetch-blocked port');
+      reserved = server;
+      forcedPort = port;
+      break;
+    } catch (error) {
+      if (server.listening) await new Promise(resolve => server.close(resolve));
+      if (error.code !== 'EADDRINUSE' && error.code !== 'EACCES') throw error;
+    }
+  }
+  assert.ok(reserved, 'At least one real owned blocked port is required; never skip the regression');
+  t.after(async () => {
+    if (reserved.listening) {
+      const closed = new Promise(resolve => reserved.close(resolve));
+      reserved.closeAllConnections();
+      await bounded(closed, 'reserved server fallback cleanup');
+    }
+    assert.equal(reserved.listening, false);
+  });
+  const actualListen = reserved.listen;
+  const attempts = [];
+  let first = true;
+  // Execute the actual helper, not a reimplementation. Only its first native bind
+  // is supplied already reserved, simulating an OS port-0 choice without a race.
+  const forcedOrigins = runInNewContext(`(${withOrigins.toString()})`, {
+    assert, bounded, importedUndici, AbortController, AbortSignal, Set, URL,
+    setTimeout, clearTimeout, require,
+    createServer(handler) {
+      reserved.on('request', handler);
+      reserved.listen = function (...args) {
+        if (first) {
+          first = false;
+          attempts.push(forcedPort);
+          queueMicrotask(() => args.at(-1)());
+          return this;
+        }
+        this.once('listening', () => attempts.push(this.address().port));
+        return Reflect.apply(actualListen, this, args);
+      };
+      return reserved;
+    },
+  });
+  try {
+    await forcedOrigins(t, [(_request, response) => response.end(BODY)], async ({ origins: [origin], requests, fetchLocal }) => {
+      assert.equal(badPortsSet.has(new URL(origin).port), false);
+      const response = await fetchLocal(`${origin}/after-blocked-bind`, { integrity: digest('sha256', BODY) });
+      assert.equal(await response.text(), BODY);
+      assert.equal(requests[0].length, 1);
+    });
+    assert.equal(attempts[0], forcedPort);
+    assert.ok(attempts.length >= 2, 'A forbidden OS choice must be closed and rebound');
+    assert.equal(badPortsSet.has(String(attempts.at(-1))), false);
+  } finally {
+    t.diagnostic(`forced blocked port=${forcedPort}; real bound ports=${attempts.join(',')}; server listening=${reserved.listening}`);
+  }
+});
 
 test('external undici rejects incorrect bytes with a tab-surrounded valid SRI digest', TEST_OPTIONS, async t => {
   t.diagnostic(`externalUndici=${require('undici/package.json').version}; entry=${require.resolve('undici')}; nodeCLI=${process.version}; builtin fetch NOT exercised`);

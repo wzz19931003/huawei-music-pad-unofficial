@@ -501,8 +501,8 @@ export function usePlayer({ quality, volume, accountKey, onError, onVolumeCommit
         playFrom(result.queue, 0);
         setHeartStatus('ready');
         setHeartMessage(result.discoveryCount
-          ? `心动模式：收藏与未收藏曲目交替播放（客户端元数据关联与探索，含 ${result.discoveryCount} 首探索曲目，非官方推荐）。`
-          : '心动模式：收藏与关联曲目交替播放（本轮未找到收藏歌手或专辑外的可用探索结果；客户端关联，非官方推荐）。');
+          ? `心动模式：收藏与未收藏曲目交替播放（客户端元数据关联与探索，含 ${result.discoveryCount} 首探索曲目，不代表华为个性化推荐）。`
+          : '心动模式：收藏与关联曲目交替播放（本轮未找到收藏歌手或专辑外的可用探索结果；客户端关联，不代表华为个性化推荐）。');
       } catch {
         if (!active()) return false;
         heartJob.current = null;

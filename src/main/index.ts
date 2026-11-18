@@ -247,14 +247,16 @@ app.on('before-quit', event => {
   event.preventDefault();
   if (lyricsShutdownStarted) return;
   lyricsShutdownStarted = true;
-  // Finish bounded preference writes, remove listeners/IPC and destroy the overlay
-  // before allowing the actual application quit; never leave an orphan float.
-  void desktopLyricsReady.then(controller => controller.dispose()).catch(() => {}).finally(() => {
+  // Drain bounded preference writes and close the overlay, but keep typed
+  // DISPOSED replies until the still-live primary renderer reaches terminal quit.
+  void desktopLyricsReady.then(controller => controller.quiesce()).catch(() => {}).finally(() => {
     lyricsShutdownComplete = true;
     app.quit();
   });
 });
 app.on('will-quit', () => {
+  // dispose revokes IPC synchronously; do not defer it to a ready-promise microtask.
+  void desktopLyrics?.dispose();
   desktopUpdater?.dispose();
   globalShortcut.unregisterAll();
   tray?.destroy();

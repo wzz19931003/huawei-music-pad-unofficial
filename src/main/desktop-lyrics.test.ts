@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as electron from 'electron';
+import { readFileSync } from 'node:fs';
+import { compileFunction } from 'node:vm';
+import { createDesktopLyricsPublisher } from '../preload/desktop-lyrics';
+import { connectDesktopLyricsPublisher } from '../renderer/desktop-lyrics-publisher';
 import { desktopLyricsChannels as channels } from '../shared/desktop-lyrics';
 
 vi.mock('electron', async () => {
@@ -46,8 +50,12 @@ vi.mock('electron', async () => {
     });
     sessions.push(value); return value;
   }) };
-  return { app: new EventEmitter(), BrowserWindow: Window, ipcMain: { handle: vi.fn((name, handler) => handlers.set(name, handler)), removeHandler: vi.fn(name => handlers.delete(name)) },
-    screen, session, __test: { windows, handlers, sessions, Contents } };
+  const renderer = new EventEmitter();
+  const ipcRenderer = Object.assign(renderer, { invoke: vi.fn() });
+  return { app: Object.assign(new EventEmitter(), { quit: vi.fn() }), BrowserWindow: Window,
+    ipcRenderer, contextBridge: { exposeInMainWorld: vi.fn() },
+    ipcMain: { handle: vi.fn((name, handler) => handlers.set(name, handler)), removeHandler: vi.fn(name => handlers.delete(name)) },
+    screen, session, __test: { windows, handlers, sessions, Contents, renderer } };
 });
 
 const native = (electron as any).__test;
@@ -76,6 +84,424 @@ beforeEach(() => {
   main = { webContents: contents, isDestroyed: () => false };
 });
 afterEach(async () => { if (controller) await controller.dispose(); controller = undefined; vi.useRealTimers(); });
+
+// Run the exact index shutdown registrations without importing its startup,
+// accounts, network, native runtime or unrelated modules. Only Electron delivery
+// and lifecycle scheduling are synthetic; controller, preload and publisher run whole.
+const microtasks = async () => { for (let i = 0; i < 24; i++) await Promise.resolve(); };
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+function indexQuitHooks(ready: Promise<any>, current = controller) {
+  const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
+  const marker = "app.on('before-quit', event => {";
+  const start = source.indexOf(marker);
+  expect(start).toBeGreaterThan(0);
+  expect(source.indexOf(marker, start + marker.length)).toBe(-1);
+  const lifecycle = electron.app as import('node:events').EventEmitter;
+  const before = new Map((['before-quit', 'will-quit'] as const).map(name => [name, lifecycle.listeners(name)]));
+  const updater = { dispose: vi.fn() }, shortcuts = { unregisterAll: vi.fn() }, tray = { destroy: vi.fn() };
+  const gate = compileFunction(`
+    let quitting = false, desktopLyricsReady = ready, desktopLyrics = current;
+    let lyricsShutdownStarted = false, lyricsShutdownComplete = false;
+    ${source.slice(start)}
+    return { read: () => ({ quitting, lyricsShutdownStarted, lyricsShutdownComplete }),
+      setController: value => { desktopLyrics = value; } };
+  `, ['app', 'ready', 'current', 'desktopUpdater', 'globalShortcut', 'tray'], { filename: 'actual-index-quit-hooks.js' })(
+    electron.app, ready, current, updater, shortcuts, tray);
+  // index registers at module load, before the async controller's own listener.
+  for (const listener of lifecycle.listeners('before-quit')) {
+    if (!before.get('before-quit')!.includes(listener)) {
+      lifecycle.removeListener('before-quit', listener as (...args: any[]) => void);
+      lifecycle.prependListener('before-quit', listener as (...args: any[]) => void);
+    }
+  }
+  void ready.then(value => gate.setController(value), () => {});
+  vi.mocked(electron.app.quit).mockImplementation(() => {
+    const event = { prevented: false, preventDefault() { this.prevented = true; } };
+    electron.app.emit('before-quit', event);
+  });
+  return { ...gate, updater, shortcuts, tray, stop() {
+    for (const [name, previous] of before) for (const listener of lifecycle.listeners(name)) {
+      if (!previous.includes(listener)) lifecycle.removeListener(name, listener as (...args: any[]) => void);
+    }
+  } };
+}
+function publisherTransport({ cleared = false, publicationReply }: { cleared?: boolean; publicationReply?: Promise<void> } = {}) {
+  const deliveries: [string, unknown][] = [];
+  const dispatches: any[] = [];
+  const notices: any[] = [];
+  const contents = main.webContents;
+  contents.send.mockImplementation((name: string, value: unknown) => { deliveries.push([name, value]); });
+  vi.mocked(electron.ipcRenderer.invoke).mockImplementation(async (name: string, ...args: unknown[]) => {
+    const handler = native.handlers.get(name);
+    const record: any = { name, input: args[0], handlerPresent: Boolean(handler), mainAlive: !contents.isDestroyed() };
+    dispatches.push(record);
+    if (!handler) { record.missing = true; throw new Error(`No handler registered for '${name}'`); }
+    record.reply = await handler(eventFor(contents), ...args);
+    if (name === channels.publish && publicationReply) await publicationReply;
+    return record.reply;
+  });
+  const player = { current: cleared ? undefined : { id: 'offline-track', title: 'source-only', artists: [{ name: 'synthetic' }] },
+    readClock: () => ({ generation: cleared ? 0 : 1, positionSeconds: 1.2, playing: !cleared, playbackRate: 1, trackId: cleared ? null : 'offline-track' }) };
+  const connection = connectDesktopLyricsPublisher({ api: createDesktopLyricsPublisher(), getPlayer: () => player,
+    onNotice: value => notices.push(value) });
+  return { connection, dispatches, notices, async deliver() {
+    let count = 0;
+    while (deliveries.length) {
+      expect(count++, 'bounded synthetic delivery loop').toBeLessThan(24);
+      const [name, value] = deliveries.shift()!;
+      native.renderer.emit(name, {}, value);
+      await microtasks();
+    }
+  } };
+}
+
+const invokeChannels = Object.values(channels).filter(name => name !== channels.stateChanged);
+function expectTerminalCleanup(gate: ReturnType<typeof indexQuitHooks>, overlay: any, unrelated: unknown) {
+  main.webContents.dead = true;
+  main.webContents.emit('destroyed');
+  electron.app.emit('will-quit', { preventDefault: vi.fn() } as any);
+  for (const channel of invokeChannels) expect(native.handlers.has(channel), channel).toBe(false);
+  expect(native.handlers.get('app:unrelated')).toBe(unrelated);
+  if (overlay) expect(overlay.dead).toBe(true);
+  for (const name of ['did-start-navigation', 'did-finish-load', 'render-process-gone', 'destroyed']) {
+    expect(main.webContents.listenerCount(name), name).toBe(0);
+  }
+  for (const name of ['display-added', 'display-removed', 'display-metrics-changed']) expect(electron.screen.listenerCount(name), name).toBe(0);
+  for (const isolated of native.sessions) {
+    expect(isolated.listenerCount('will-download')).toBe(0);
+    expect(isolated.webRequest.onBeforeRequest).toHaveBeenLastCalledWith(null);
+  }
+  expect(gate.updater.dispose).toHaveBeenCalledOnce();
+  expect(gate.shortcuts.unregisterAll).toHaveBeenCalledOnce();
+  expect(gate.tray.destroy).toHaveBeenCalledOnce();
+  expect(vi.getTimerCount()).toBe(0);
+}
+
+describe('index shutdown with the real controller, preload and publisher (no native launch)', () => {
+  it('finishes pending preference-read initialization without opening an overlay after quit', async () => {
+    const read = deferred<unknown>();
+    const reading = deferred<void>();
+    const initializing = getController({ storage: { read: () => { reading.resolve(); return read.promise; }, write: vi.fn() } });
+    await reading.promise;
+    const gate = indexQuitHooks(initializing, null);
+    try {
+      const quit = { preventDefault: vi.fn() };
+      electron.app.emit('before-quit', quit);
+      await microtasks();
+      expect(quit.preventDefault).toHaveBeenCalledOnce();
+      expect(gate.read()).toMatchObject({ lyricsShutdownStarted: true, lyricsShutdownComplete: false });
+      read.resolve({ version: 1, visible: true });
+      controller = await initializing;
+      await microtasks();
+      expect(gate.read().lyricsShutdownComplete).toBe(true);
+      expect(native.windows, 'a pending read cannot start new overlay work after quit').toHaveLength(0);
+      expect(await call(channels.mainState, main.webContents)).toMatchObject({ ok: false, error: { code: 'DISPOSED' } });
+      expect(controller.getState()).toMatchObject({ shown: false, snapshot: { track: null } });
+    } finally { read.resolve(null); controller = await initializing; gate.stop(); }
+  });
+
+  it('releases pending restored-window initialization on quit without waiting for loadURL', async () => {
+    const load = deferred<void>();
+    const loading = deferred<void>();
+    const prototype = electron.BrowserWindow.prototype as any;
+    const original = prototype.loadURL;
+    const spy = vi.spyOn(prototype, 'loadURL').mockImplementationOnce(async function(this: any, url: unknown) {
+      loading.resolve();
+      await load.promise;
+      return original.call(this, url);
+    });
+    const initializing = getController({ storage: { read: () => ({ version: 1, visible: true }), write: vi.fn() } });
+    await loading.promise;
+    const gate = indexQuitHooks(initializing, null);
+    try {
+      electron.app.quit();
+      await microtasks();
+      expect(gate.read().lyricsShutdownComplete, 'quit cannot be held hostage by a still-pending overlay load').toBe(true);
+      controller = await initializing;
+      expect(native.windows[0].dead).toBe(true);
+      expect(native.windows[0].showInactive).not.toHaveBeenCalled();
+      expect(await call(channels.mainState, main.webContents)).toMatchObject({ ok: false, error: { code: 'DISPOSED' } });
+      load.resolve(); await microtasks();
+      expect(native.windows[0].shown).toBe(false);
+      expect(written).toHaveLength(0);
+    } finally {
+      load.resolve(); controller = await initializing;
+      gate.stop(); spy.mockRestore();
+    }
+  });
+
+  it.each([false, true])('keeps epoch callbacks typed with an in-flight publisher reply (generation-zero clear=%s)', async cleared => {
+    vi.useFakeTimers();
+    controller = await getController();
+    const reply = deferred<void>();
+    const gate = indexQuitHooks(Promise.resolve(controller));
+    const transport = publisherTransport({ cleared, publicationReply: reply.promise });
+    try {
+      await microtasks(); await transport.deliver();
+      const accepted = transport.dispatches.filter(d => d.name === channels.publish);
+      expect(accepted).toHaveLength(1);
+      expect(accepted[0]).toMatchObject({ reply: { ok: true }, input: { generation: cleared ? 0 : 1 } });
+      const epoch = controller.getState().snapshot.epoch;
+      electron.app.quit(); await microtasks(); await transport.deliver();
+      expect(controller.getState().snapshot.epoch).toBeGreaterThan(epoch);
+      reply.resolve(); await microtasks(); await transport.deliver();
+      const late = transport.dispatches.filter(d => d.name === channels.publish).slice(1);
+      expect(late).toHaveLength(1);
+      expect(late[0]).toMatchObject({ mainAlive: true, handlerPresent: true, input: { generation: cleared ? 0 : 1 }, reply: { ok: false, error: { code: 'DISPOSED' } } });
+      expect(transport.dispatches.some(d => d.missing)).toBe(false);
+      expect(transport.notices.some(n => n.code === 'WINDOW_FAILED')).toBe(false);
+      expect(controller.getState().snapshot).toMatchObject({ track: null, anchor: null, current: null, next: null });
+    } finally { reply.resolve(); transport.connection.stop(); await microtasks(); gate.stop(); }
+    expect(vi.getTimerCount()).toBe(0);
+    expect(native.renderer.listenerCount(channels.stateChanged)).toBe(0);
+  });
+
+  it('shares one pending storage drain across repeated quit and keeps all six typed replies until terminal cleanup', async () => {
+    vi.useFakeTimers();
+    const write = deferred<void>();
+    let delay = false;
+    const store = vi.fn(async (value: unknown) => { written.push(value); if (delay) await write.promise; });
+    controller = await getController({ storage: { read: () => null, write: store } });
+    await controller.setVisible(true);
+    const overlay = native.windows[0];
+    delay = true;
+    const setting = call(channels.mainPreferences, main.webContents, { fontSize: 36 });
+    await microtasks();
+    expect(controller.getState().persistence).toBe('pending');
+    const quiesce = vi.spyOn(controller, 'quiesce');
+    const gate = indexQuitHooks(Promise.resolve(controller));
+    const unrelated = vi.fn(); native.handlers.set('app:unrelated', unrelated);
+    vi.mocked(electron.app.quit).mockClear();
+    try {
+      for (let i = 0; i < 3; i++) {
+        const quit = { preventDefault: vi.fn() };
+        electron.app.emit('before-quit', quit);
+        expect(quit.preventDefault).toHaveBeenCalledOnce();
+      }
+      await microtasks();
+      expect(quiesce).toHaveBeenCalledOnce();
+      expect(gate.read().lyricsShutdownComplete).toBe(false);
+      expect(overlay.dead).toBe(true);
+      const drain = controller.quiesce();
+      expect(controller.quiesce()).toBe(drain);
+      for (const channel of invokeChannels) expect(await call(channel, main.webContents)).toMatchObject({ ok: false, error: { code: 'DISPOSED' } });
+      expect(store).toHaveBeenCalledTimes(2);
+      expect(electron.app.quit).not.toHaveBeenCalled();
+      write.resolve(); await setting; await drain; await microtasks();
+      expect(gate.read().lyricsShutdownComplete).toBe(true);
+      expect(electron.app.quit).toHaveBeenCalledOnce();
+      expect(written.at(-1)).toMatchObject({ version: 1, fontSize: 36, visible: true });
+      expect(controller.getState().persistence).toBe('saved');
+      expectTerminalCleanup(gate, overlay, unrelated);
+      expect(controller.dispose()).toBe(drain);
+    } finally { write.resolve(); await setting; gate.stop(); }
+  });
+
+  it.each(['failure', 'deadline'] as const)('drains a %s-bounded pending store honestly without overlapping or retrying it during quit', async outcome => {
+    vi.useFakeTimers();
+    const write = deferred<void>();
+    let delay = false;
+    const store = vi.fn(async (value: unknown) => { written.push(value); if (delay) await write.promise; });
+    const notices: unknown[] = [];
+    controller = await getController({ storage: { read: () => null, write: store }, onNotice: (value: unknown) => notices.push(value) });
+    await controller.setVisible(true);
+    const overlay = native.windows[0];
+    delay = true;
+    const setting = call(channels.mainPreferences, main.webContents, { fontSize: 38 });
+    await microtasks();
+    const gate = indexQuitHooks(Promise.resolve(controller));
+    const unrelated = vi.fn(); native.handlers.set('app:unrelated', unrelated);
+    try {
+      electron.app.quit(); await microtasks();
+      expect(gate.read().lyricsShutdownComplete).toBe(false);
+      if (outcome === 'failure') write.reject(new Error('synthetic-private-store-path'));
+      else {
+        await vi.advanceTimersByTimeAsync(2999);
+        expect(gate.read().lyricsShutdownComplete).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      expect(await setting).toMatchObject({ ok: false, error: { code: 'PERSISTENCE_WRITE_FAILED' } });
+      await microtasks();
+      expect(gate.read().lyricsShutdownComplete).toBe(true);
+      expect(controller.getState()).toMatchObject({ shown: false, persistence: 'error', notice: { code: 'PERSISTENCE_WRITE_FAILED' } });
+      expect(JSON.stringify(notices)).not.toContain('synthetic-private-store-path');
+      expect(store).toHaveBeenCalledTimes(2);
+      for (const channel of invokeChannels) expect(await call(channel, main.webContents)).toMatchObject({ ok: false, error: { code: 'DISPOSED' } });
+      expectTerminalCleanup(gate, overlay, unrelated);
+      const sends = main.webContents.send.mock.calls.length;
+      write.resolve(); await microtasks(); await vi.advanceTimersByTimeAsync(5000);
+      expect(store).toHaveBeenCalledTimes(2);
+      expect(main.webContents.send).toHaveBeenCalledTimes(sends);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { write.resolve(); await setting; gate.stop(); }
+  });
+
+  it.each(['failure', 'deadline'] as const)('finishes a %s-bounded preference read during quit without overwriting storage', async outcome => {
+    vi.useFakeTimers();
+    const read = deferred<unknown>();
+    const reading = deferred<void>();
+    const store = vi.fn();
+    const initializing = getController({ storage: { read: () => { reading.resolve(); return read.promise; }, write: store } });
+    await reading.promise;
+    const gate = indexQuitHooks(initializing, null);
+    const unrelated = vi.fn(); native.handlers.set('app:unrelated', unrelated);
+    try {
+      electron.app.quit(); await microtasks();
+      expect(gate.read().lyricsShutdownComplete).toBe(false);
+      if (outcome === 'failure') read.reject(new Error('synthetic-private-read-path'));
+      else {
+        await vi.advanceTimersByTimeAsync(2999);
+        expect(gate.read().lyricsShutdownComplete).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      controller = await initializing; await microtasks();
+      expect(gate.read().lyricsShutdownComplete).toBe(true);
+      expect(controller.getState()).toMatchObject({ shown: false, persistence: 'error', notice: { code: 'PERSISTENCE_READ_FAILED' } });
+      expect(JSON.stringify(controller.getState())).not.toContain('synthetic-private-read-path');
+      expect(native.windows).toHaveLength(0);
+      expect(store).not.toHaveBeenCalled();
+      for (const channel of invokeChannels) expect(await call(channel, main.webContents)).toMatchObject({ ok: false, error: { code: 'DISPOSED' } });
+      expectTerminalCleanup(gate, null, unrelated);
+      read.resolve({ version: 1, visible: true }); await microtasks();
+      expect(native.windows).toHaveLength(0);
+      expect(store).not.toHaveBeenCalled();
+    } finally { read.resolve(null); controller = await initializing; gate.stop(); }
+  });
+
+  it('serializes the last clamped move behind an already pending write and waits for its own acknowledgement before quit', async () => {
+    vi.useFakeTimers();
+    const first = deferred<void>(), final = deferred<void>();
+    let delay = false, active = 0, maximum = 0;
+    const store = vi.fn(async (value: unknown) => {
+      written.push(value); active++; maximum = Math.max(maximum, active);
+      try { if (delay) await (written.length === 2 ? first.promise : final.promise); }
+      finally { active--; }
+    });
+    controller = await getController({ storage: { read: () => null, write: store } });
+    await controller.setVisible(true);
+    const overlay = native.windows[0];
+    delay = true;
+    const setting = controller.updatePreferences({ fontSize: 36 });
+    await microtasks();
+    overlay.bounds = { ...overlay.getBounds(), x: 99999, y: -99999 };
+    overlay.emit('move');
+    const gate = indexQuitHooks(Promise.resolve(controller));
+    const unrelated = vi.fn(); native.handlers.set('app:unrelated', unrelated);
+    try {
+      electron.app.quit(); await microtasks();
+      const bounds = overlay.getBounds();
+      expect(bounds.y).toBe(0);
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(1920);
+      expect(gate.read().lyricsShutdownComplete).toBe(false);
+      expect(store).toHaveBeenCalledTimes(2);
+      first.resolve(); await microtasks();
+      expect(store).toHaveBeenCalledTimes(3);
+      expect(written.at(-1)).toMatchObject({ version: 1, fontSize: 36, position: { x: bounds.x, y: bounds.y } });
+      expect(gate.read().lyricsShutdownComplete, 'the earlier acknowledged snapshot is not the final move').toBe(false);
+      expect(maximum).toBe(1);
+      final.resolve(); await setting; await microtasks();
+      expect(gate.read().lyricsShutdownComplete).toBe(true);
+      expect(controller.getState().persistence).toBe('saved');
+      expectTerminalCleanup(gate, overlay, unrelated);
+      const count = store.mock.calls.length;
+      overlay.emit('move'); electron.screen.emit('display-removed', {}, { id: 2 } as any);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(store).toHaveBeenCalledTimes(count);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { first.resolve(); final.resolve(); await setting; gate.stop(); }
+  });
+
+  it('settles an in-flight overlay request as DISPOSED and does not report a late quit-induced load rejection as WINDOW_FAILED', async () => {
+    vi.useFakeTimers();
+    const load = deferred<void>(), loading = deferred<void>();
+    const notices: unknown[] = [];
+    controller = await getController({ onNotice: (value: unknown) => notices.push(value) });
+    const spy = vi.spyOn(electron.BrowserWindow.prototype as any, 'loadURL').mockImplementationOnce(() => { loading.resolve(); return load.promise; });
+    let reply: any;
+    const opening = call(channels.mainPreferences, main.webContents, { visible: true }).then((value: unknown) => { reply = value; });
+    await loading.promise;
+    const overlay = native.windows[0];
+    const gate = indexQuitHooks(Promise.resolve(controller));
+    const unrelated = vi.fn(); native.handlers.set('app:unrelated', unrelated);
+    try {
+      electron.app.quit(); await microtasks();
+      expect(reply).toMatchObject({ ok: false, error: { code: 'DISPOSED' } });
+      expect(gate.read().lyricsShutdownComplete).toBe(true);
+      expect(overlay.dead).toBe(true);
+      expect(overlay.showInactive).not.toHaveBeenCalled();
+      load.reject(new Error('synthetic-private-load-path')); await microtasks();
+      expect(notices, 'destroying the pending overlay at quit is not a window fault').toEqual([]);
+      expect(controller.getState()).toMatchObject({ shown: false, notice: null });
+      expect(written).toHaveLength(0);
+      expectTerminalCleanup(gate, overlay, unrelated);
+    } finally { load.resolve(); await opening; gate.stop(); spy.mockRestore(); }
+  });
+
+  it('continues reporting an active load failure and permits recovery rather than treating every failure as shutdown', async () => {
+    const notices: unknown[] = [];
+    controller = await getController({ onNotice: (value: unknown) => notices.push(value) });
+    const spy = vi.spyOn(electron.BrowserWindow.prototype as any, 'loadURL').mockRejectedValueOnce(new Error('synthetic-private-active-load-path'));
+    try {
+      expect(await controller.setVisible(true)).toMatchObject({ ok: false, error: { code: 'WINDOW_FAILED' } });
+      expect(notices).toEqual([{ code: 'WINDOW_FAILED', message: expect.any(String) }]);
+      expect(JSON.stringify(notices)).not.toContain('synthetic-private-active-load-path');
+      expect(native.windows[0].dead).toBe(true);
+      expect(native.sessions[0].listenerCount('will-download')).toBe(0);
+      expect(native.sessions[0].webRequest.onBeforeRequest).toHaveBeenLastCalledWith(null);
+      expect(written).toHaveLength(0);
+      expect(await controller.setVisible(true)).toMatchObject({ ok: true, data: { shown: true, notice: null } });
+    } finally { spy.mockRestore(); }
+  });
+
+  it('does not rearm the publication epoch or primary listeners through native entry points after quiesce', async () => {
+    vi.useFakeTimers();
+    controller = await getController();
+    await controller.setVisible(true);
+    const overlay = native.windows[0];
+    const gate = indexQuitHooks(Promise.resolve(controller));
+    const unrelated = vi.fn(); native.handlers.set('app:unrelated', unrelated);
+    try {
+      electron.app.quit(); await microtasks();
+      const epoch = controller.getState().snapshot.epoch;
+      controller.reset();
+      controller.attachMainWindow();
+      const names = ['did-start-navigation', 'did-finish-load', 'render-process-gone', 'destroyed'];
+      expect({ epoch: controller.getState().snapshot.epoch, listeners: names.map(name => main.webContents.listenerCount(name)) },
+        'quiesce must stop native callbacks as well as IPC work').toEqual({ epoch, listeners: [0, 0, 0, 0] });
+      expect(await controller.setVisible(true)).toMatchObject({ ok: false, error: { code: 'DISPOSED' } });
+      expect(await call(channels.mainState, main.webContents)).toMatchObject({ ok: false, error: { code: 'DISPOSED' } });
+      expectTerminalCleanup(gate, overlay, unrelated);
+    } finally { gate.stop(); }
+  });
+
+  it('keeps typed DISPOSED publication replies while the primary survives the real before-quit hook', async () => {
+    controller = await getController();
+    const gate = indexQuitHooks(Promise.resolve(controller));
+    const transport = publisherTransport();
+    try {
+      await microtasks(); await transport.deliver();
+      expect(transport.dispatches.some(d => d.name === channels.publish && d.reply?.ok)).toBe(true);
+      expect(controller.getState().snapshot.track.title).toBe('source-only');
+      const start = transport.dispatches.length;
+      electron.app.quit(); await microtasks();
+      expect(gate.read().lyricsShutdownComplete).toBe(true);
+      expect(main.isDestroyed()).toBe(false);
+      await transport.deliver(); // admissible delayed epoch callback, not a native timing claim
+      const late = transport.dispatches.slice(start).filter(d => d.name === channels.publish);
+      expect(late.length).toBeGreaterThan(0);
+      expect(late.every(d => d.mainAlive)).toBe(true);
+      expect(late.filter(d => d.missing), 'live primary hit a missing handler instead of typed DISPOSED').toEqual([]);
+      expect(late.every(d => d.reply?.error?.code === 'DISPOSED')).toBe(true);
+      expect(transport.notices.some(n => n.code === 'WINDOW_FAILED')).toBe(false);
+      expect(controller.getState().snapshot.track).toBeNull();
+    } finally { transport.connection.stop(); gate.stop(); }
+  });
+});
 
 describe('desktop lyrics native capability boundary', () => {
   it('shows an ordinary sandboxed transparent topmost local window without stealing focus, then relays a bounded real clock', async () => {

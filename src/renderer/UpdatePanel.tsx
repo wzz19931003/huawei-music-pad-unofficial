@@ -13,7 +13,7 @@ export function AboutScreen(props: Parameters<typeof UpdatePanel>[0]) {
     <section className="pad-about-notices" aria-label="来源与许可"><h3>来源与许可</h3>
       <p>本地派生项目：wzz19931003/huawei-music-pad-unofficial。</p>
       <p>基于 Daydreamcgy/huawei-music-win，继承 talongao/huawei-music-desktop 的协议与基础结构；代码按 AGPL-3.0-only 分发，修改声明见 NOTICE。</p>
-      <p>与华为无隶属、合作或授权关系。音乐与会员权益由你的华为账号决定；本项目不提供音源、不下载、不解密。</p>
+      <p>独立第三方客户端，与华为无隶属、合作或授权关系。音乐与会员权益由你的华为账号决定；本项目不提供音源、不下载、不解密。</p>
       <p>更新来自本项目的 GitHub Releases，不来自华为或上游作者。当前构建未签名。</p>
     </section>
   </div>;

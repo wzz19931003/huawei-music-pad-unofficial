@@ -9,6 +9,14 @@ import { toUpdateView } from '../main/update-view.mjs';
 const render = (status: UpdateState['status'], extra = {}) => renderToStaticMarkup(<UpdatePanel state={{ status, currentVersion: '0.1.1', message: '', ...extra }} onCheck={vi.fn()} onDownload={vi.fn()} onInstall={vi.fn()} />);
 
 describe('real update state presentation', () => {
+  it('preserves historical identity wording in supplied release notes', () => {
+    const html = render('available', { version: '0.2.0', releaseNotes: [
+      { version: '0.2.0', sections: [{ kind: 'text', items: ['历史说明：非官方客户端兼容性修复。'] }] },
+    ] });
+    expect(html).toContain('<p>历史说明：非官方客户端兼容性修复。</p>');
+    expect(html).toContain('下载更新');
+  });
+
   it('renders actual sanitized transport notes without making remote resources or automatic downloads', async () => {
     const emitter = new EventEmitter();
     const updater = Object.assign(emitter, {
@@ -121,7 +129,14 @@ describe('real update state presentation', () => {
     expect(html).toContain('0.1.1');
     expect(html).toContain('Daydreamcgy/huawei-music-win');
     expect(html).toContain('talongao/huawei-music-desktop');
-    expect(html).toContain('非官方');
+    expect(html).toContain('<h2>Wmusic</h2>');
+    expect(html).toContain('独立第三方客户端，与华为无隶属、合作或授权关系。');
+    expect(html).toContain('AGPL-3.0-only');
+    expect(html).toContain('修改声明见 NOTICE');
+    expect(html).toContain('当前构建未签名');
+    expect(html).toContain('wzz19931003/huawei-music-pad-unofficial');
+    expect(html).toContain('更新来自本项目的 GitHub Releases，不来自华为或上游作者。');
+    expect(html).not.toContain('非官方');
   });
   it('shows download progress and only offers restart after verified download', () => {
     const loading = render('downloading', { progress: 42, version: '0.2.0' });

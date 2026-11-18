@@ -1,14 +1,54 @@
 import { describe, expect, it, vi } from 'vitest';
+import { Children, isValidElement, type ReactElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { APP_BRAND_LABEL, APP_DISPLAY_NAME } from '../shared/app-name.mjs';
 import { AboutScreen, UpdatePanel } from './UpdatePanel';
 import { SettingsScreen } from './pages';
 import { LoginScreen } from './screens';
+import { PadHomeScreen, PadMineScreen, type PadScreenProps } from './PadScreens';
+
+const padProps = (): PadScreenProps => ({
+  authenticated: false, favorites: [], history: [], playlists: [], total: 0,
+  loading: false, playing: false,
+  onPlay: vi.fn(), onResume: vi.fn(), onOpenFavorites: vi.fn(), onOpenPlaylist: vi.fn(),
+  onOpenPlaylists: vi.fn(), onOpenCharts: vi.fn(), onSearch: vi.fn(), onOpenSettings: vi.fn(),
+  onCheckUpdates: vi.fn(), onOpenAbout: vi.fn(), onLogin: vi.fn(), onNotice: vi.fn(),
+  onOpenHistory: vi.fn(), onToggleFavorite: vi.fn(), onSelectHeart: vi.fn(), onCancelHeart: vi.fn(),
+});
+
+function elements(node: ReactNode): ReactElement<{ children?: ReactNode; 'aria-label'?: string; onClick?: () => void }>[] {
+  return Children.toArray(node).flatMap(child => isValidElement<{ children?: ReactNode; 'aria-label'?: string; onClick?: () => void }>(child)
+    ? [child, ...elements(child.props.children)] : []);
+}
 
 describe('approved Wmusic display branding', () => {
-  it('keeps the unofficial identity in both shared product labels', () => {
-    expect(APP_DISPLAY_NAME).toBe('Wmusic（非官方）');
-    expect(APP_BRAND_LABEL).toBe('Wmusic · 非官方');
+  it('labels the home heart card as client-generated association and exploration', () => {
+    const html = renderToStaticMarkup(<PadHomeScreen {...padProps()} />);
+    expect(html).toContain('收藏＋关联与探索 · 客户端生成');
+    expect(html).not.toContain('非官方');
+  });
+
+  it('discloses independent third-party identity through the real help action', () => {
+    const props = padProps();
+    const help = elements(PadMineScreen(props)).find(node => node.type === 'button' && node.props['aria-label'] === '帮助和反馈');
+    expect(help).toBeDefined();
+    expect(help!.props.onClick).toBeTypeOf('function');
+    help!.props.onClick!();
+    expect(props.onNotice).toHaveBeenCalledExactlyOnceWith('这是独立第三方客户端，与华为无隶属、合作或授权关系。账号、播放和缓存选项可在设置中查看。');
+    expect(props.onLogin).not.toHaveBeenCalled();
+  });
+
+  it('uses the approved Wmusic display name in both shared product labels', () => {
+    expect(APP_DISPLAY_NAME).toBe('Wmusic');
+    expect(APP_BRAND_LABEL).toBe('Wmusic');
+  });
+
+  it('preserves supplied track titles instead of globally censoring identity words', () => {
+    const props = { ...padProps(), authenticated: true,
+      resumeTrack: { id: 'synthetic-title', title: '非官方现场版本', artists: [{ name: '合成测试歌手' }], available: true },
+    };
+    const html = renderToStaticMarkup(<PadHomeScreen {...props} />);
+    expect(html).toContain('非官方现场版本');
   });
 
   it('uses the shared display name on About without relabeling upstream provenance', () => {
@@ -22,6 +62,9 @@ describe('approved Wmusic display branding', () => {
     expect(html).toContain('wzz19931003/huawei-music-pad-unofficial');
     expect(html).toContain('Daydreamcgy/huawei-music-win');
     expect(html).toContain('talongao/huawei-music-desktop');
+    expect(html).toContain('独立第三方客户端，与华为无隶属、合作或授权关系。');
+    expect(html).toContain('AGPL-3.0-only');
+    expect(html).toContain('修改声明见 NOTICE');
     expect(html).toContain('与华为无隶属、合作或授权关系。音乐与会员权益由你的华为账号决定');
     expect(html).toContain('更新来自本项目的 GitHub Releases，不来自华为或上游作者。当前构建未签名。');
   });
@@ -54,6 +97,7 @@ describe('approved Wmusic display branding', () => {
     expect(html).toContain('使用华为账号登录');
     expect(html).toContain('用华为账号登录，读取你的收藏与歌单。');
     expect(html).toContain('登录在官方页面上完成，客户端不接触你的密码。');
-    expect(html).toContain('非官方客户端，与华为无隶属关系，不提供任何音源。');
+    expect(html).toContain('独立第三方客户端，与华为无隶属、合作或授权关系，不提供任何音源。');
+    expect(html).not.toContain('非官方');
   });
 });

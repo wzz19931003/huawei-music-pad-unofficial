@@ -1,10 +1,10 @@
 {
   "name": "huawei-music-desktop",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "main": "out/main/index.js",
-  "description": "Wmusic：兼容华为音乐的第三方 Windows 客户端（非官方，未获授权 · 需自备账号与会员 · 不提供音源）",
+  "description": "Wmusic：兼容华为音乐的独立第三方 Windows 客户端（与华为无隶属、合作或授权关系 · 需自备账号与会员 · 不提供音源）",
   "license": "AGPL-3.0-only",
   "desktopName": "huawei-music-desktop.desktop",
   "author": {
@@ -67,7 +67,7 @@
   },
   "build": {
     "appId": "org.hwmusicdesktop.unofficial",
-    "productName": "Wmusic（非官方）",
+    "productName": "Wmusic",
     "asar": true,
     "npmRebuild": false,
     "publish": {
@@ -110,6 +110,7 @@
       "artifactName": "Wmusic-${version}-${os}-${arch}-setup-unofficial.${ext}"
     },
     "nsis": {
+      "include": "build/installer-compat.nsh",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
@@ -135,11 +136,11 @@
       "syncDesktopName": true,
       "executableName": "huawei-music-desktop",
       "category": "AudioVideo;Audio;Music",
-      "synopsis": "Wmusic: unofficial third-party Huawei Music client",
+      "synopsis": "Wmusic: independent third-party Huawei Music client",
       "desktop": {
         "entry": {
-          "Name": "Wmusic（非官方）",
-          "Comment": "非官方第三方客户端，与华为无隶属或授权关系"
+          "Name": "Wmusic",
+          "Comment": "独立第三方客户端，与华为无隶属、合作或授权关系"
         }
       }
     }

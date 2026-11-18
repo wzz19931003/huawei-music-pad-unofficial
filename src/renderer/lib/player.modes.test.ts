@@ -155,7 +155,7 @@ describe('singleton player mode integration', () => {
     expect(player.heartStatus).toBe('ready');
     expect(player.heartMessage).toMatch(/客户端.*关联.*探索/);
     expect(player.heartMessage).toContain('1 首探索曲目');
-    expect(player.heartMessage).toContain('非官方推荐');
+    expect(player.heartMessage).toContain('不代表华为个性化推荐');
     expect(player.heartMessage).not.toMatch(/新歌|新发行/);
     expect(loadingMessage).toMatch(/客户端.*探索/);
     expect(loadingMessage).not.toMatch(/新歌|新发行/);
@@ -180,7 +180,7 @@ describe('singleton player mode integration', () => {
     expect(player.heartStatus).toBe('ready');
     expect(player.heartMessage).toContain('本轮未找到收藏歌手或专辑外的可用探索结果');
     expect(player.heartMessage).toContain('客户端关联');
-    expect(player.heartMessage).toContain('非官方推荐');
+    expect(player.heartMessage).toContain('不代表华为个性化推荐');
     expect(player.heartMessage).not.toMatch(/新歌|新发行|0 首探索/);
     expect(config.onPreferencesChange).toHaveBeenCalledExactlyOnceWith('heart');
     expect(TestAudio.instances).toHaveLength(1);

@@ -65,20 +65,30 @@ test('the window icon is embedded at 512px and does not depend on unpackaged bui
   assert.ok(!main.includes("icon: join(__dirname, '../../build/icon.png')"), 'build assets are not in the packaged ASAR');
 });
 
-test('the HTML fallback title uses the same Wmusic nonofficial identity', async () => {
+test('the HTML fallback title uses the approved Wmusic display name', async () => {
   const html = await readFile(new URL('../src/renderer/index.html', import.meta.url), 'utf8');
   const { APP_DISPLAY_NAME } = await import('../src/shared/app-name.mjs');
+  assert.equal(html.match(/<title>([^<]+)<\/title>/)?.[1], 'Wmusic');
   assert.equal(html.match(/<title>([^<]+)<\/title>/)?.[1], APP_DISPLAY_NAME);
 });
 
-test('Wmusic installer branding preserves technical identity and the authorized update source', async () => {
+test('Wmusic installer uses the approved display product name', async () => {
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
-  assert.equal(pkg.build.productName, 'Wmusic（非官方）');
+  assert.equal(pkg.build.productName, 'Wmusic');
+});
+
+test('Wmusic installer preserves technical identity and the authorized update source', async () => {
+  const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(pkg.name, 'huawei-music-desktop');
+  assert.equal(pkg.desktopName, 'huawei-music-desktop.desktop');
   assert.equal(pkg.build.appId, 'org.hwmusicdesktop.unofficial');
   assert.equal(pkg.build.nsis.deleteAppDataOnUninstall, false);
   assert.equal(pkg.build.win.artifactName, 'Wmusic-${version}-${os}-${arch}-setup-unofficial.${ext}');
   assert.equal(pkg.build.publish.owner, 'wzz19931003');
   assert.equal(pkg.build.publish.repo, 'huawei-music-pad-unofficial');
+  assert.equal(pkg.build.artifactName, '${name}-${version}-${os}-${arch}-unofficial.${ext}');
+  assert.equal(pkg.build.linux.executableName, 'huawei-music-desktop');
+  assert.equal(pkg.author.name, 'Huawei Music Desktop (unofficial)');
+  assert.equal(pkg.license, 'AGPL-3.0-only');
   assert.ok(pkg.build.files.includes('LICENSE') && pkg.build.files.includes('NOTICE'));
 });

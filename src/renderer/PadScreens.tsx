@@ -136,7 +136,7 @@ export function PadHomeScreen(input: PadScreenProps) {
           art={<Disc3 className="desktop-feature-symbol" />} glyph={<LockKeyhole />} unavailable
           onClick={() => props.onNotice('新歌推荐尚未接入，不将搜索或播放历史充当官方新歌推荐。')} />
         <FeatureCard tone="listen" label={props.heartPending ? '停止等待心动模式' : '心动模式'} title="心动模式"
-          subtitle={props.heartPending ? '正在关联与探索 · 点击停止等待' : '收藏＋关联与探索 · 非官方推荐'}
+          subtitle={props.heartPending ? '正在关联与探索 · 点击停止等待' : '收藏＋关联与探索 · 客户端生成'}
           top={<><Heart /> HEART</>} art={<Heart className="desktop-feature-symbol" />} glyph={<Heart />}
           onClick={!props.authenticated ? props.onLogin : props.heartPending ? props.onCancelHeart : props.onSelectHeart} />
         <FeatureCard tone="collection" label="打开我的收藏" title="我的收藏"
@@ -305,7 +305,7 @@ export function PadMineScreen(input: PadScreenProps) {
       <button type="button" aria-label="检查更新" onClick={props.onCheckUpdates}><RefreshCw /><strong>检查更新</strong><ChevronRight /></button>
       <button type="button" aria-label="关于" onClick={props.onOpenAbout}><Info /><strong>关于</strong><ChevronRight /></button>
       <button type="button" aria-label="设置" onClick={props.onOpenSettings}><Settings /><strong>设置</strong><ChevronRight /></button>
-      <button type="button" aria-label="帮助和反馈" onClick={() => props.onNotice('这是非官方客户端。账号、播放和缓存选项可在设置中查看。')}><HelpCircle /><strong>帮助和反馈</strong><ChevronRight /></button>
+      <button type="button" aria-label="帮助和反馈" onClick={() => props.onNotice('这是独立第三方客户端，与华为无隶属、合作或授权关系。账号、播放和缓存选项可在设置中查看。')}><HelpCircle /><strong>帮助和反馈</strong><ChevronRight /></button>
     </div>
   </div>;
 }
